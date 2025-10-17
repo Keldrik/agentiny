@@ -14,7 +14,7 @@ export class ValidationError extends Error {
    */
   constructor(
     message: string,
-    public readonly errors?: unknown[]
+    public readonly errors?: unknown[],
   ) {
     super(message);
     this.name = 'ValidationError';
@@ -71,7 +71,7 @@ export interface ValidationOptions<T = unknown> {
  */
 export function withValidation<TState = unknown>(
   action: ActionFn<TState>,
-  options: ValidationOptions<TState>
+  options: ValidationOptions<TState>,
 ): ActionFn<unknown> {
   return async (state: unknown): Promise<void> => {
     if (!options.validate(state)) {
@@ -119,7 +119,7 @@ export function withValidation<TState = unknown>(
 
 export function withSchema<TState = unknown>(
   action: ActionFn<TState>,
-  schema: unknown
+  schema: unknown,
 ): ActionFn<unknown> {
   return async (state: unknown): Promise<void> => {
     try {
@@ -138,7 +138,7 @@ export function withSchema<TState = unknown>(
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
           `State validation failed: ${JSON.stringify((result as any).error?.errors)}`,
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument
-          (result as any).error?.errors
+          (result as any).error?.errors,
         );
       }
 
@@ -152,7 +152,7 @@ export function withSchema<TState = unknown>(
         (error instanceof Error && error.message.includes('Cannot find module'))
       ) {
         throw new Error(
-          'Zod is required for withSchema but not installed. ' + 'Install it with: npm install zod'
+          'Zod is required for withSchema but not installed. ' + 'Install it with: npm install zod',
         );
       }
 

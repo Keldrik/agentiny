@@ -52,7 +52,7 @@ import type { ConditionFn } from './types';
  */
 export async function evaluateConditions<TState>(
   conditions: readonly ConditionFn<TState>[],
-  state: TState
+  state: TState,
 ): Promise<boolean> {
   // Empty conditions array returns true
   if (conditions.length === 0) {

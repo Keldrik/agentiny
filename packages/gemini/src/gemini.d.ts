@@ -40,7 +40,7 @@ declare module '@google/generative-ai' {
     constructor(modelConfig: ModelConfig);
     generateContent(
       request: string | unknown,
-      requestOptions?: GenerateContentRequest
+      requestOptions?: GenerateContentRequest,
     ): Promise<GenerateContentResponse>;
     countTokens(request: string | unknown): Promise<{ totalTokens: number }>;
   }

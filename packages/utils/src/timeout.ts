@@ -40,7 +40,7 @@ export interface TimeoutOptions {
  */
 export function withTimeout<TState = unknown>(
   action: ActionFn<TState>,
-  options: TimeoutOptions
+  options: TimeoutOptions,
 ): ActionFn<TState> {
   const { ms } = options;
 
@@ -48,7 +48,7 @@ export function withTimeout<TState = unknown>(
     return Promise.race([
       Promise.resolve(action(state)),
       new Promise<void>((_, reject) =>
-        setTimeout(() => reject(new Error(`Action timeout after ${ms}ms`)), ms)
+        setTimeout(() => reject(new Error(`Action timeout after ${ms}ms`)), ms),
       ),
     ]);
   };

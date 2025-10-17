@@ -21,7 +21,7 @@ interface AnalysisState {
 }
 
 const agent = new Agent<AnalysisState>({
-  initialState: { data: '' }
+  initialState: { data: '' },
 });
 
 // Create an OpenAI action
@@ -32,8 +32,8 @@ const analyzeAction = createOpenAIAction(
     onResponse: (response, state) => {
       state.analysis = response;
       console.log('Analysis:', response);
-    }
-  }
+    },
+  },
 );
 
 // Add trigger to use the action
@@ -41,7 +41,7 @@ agent.addTrigger({
   id: 'analyze-trigger',
   check: (state) => !!state.data && !state.analysis,
   actions: [analyzeAction],
-  repeat: false
+  repeat: false,
 });
 
 // Start agent and set data
@@ -86,7 +86,7 @@ interface TextState {
 }
 
 const agent = new Agent<TextState>({
-  initialState: { input: 'Hello world' }
+  initialState: { input: 'Hello world' },
 });
 
 agent.addTrigger({
@@ -99,10 +99,10 @@ agent.addTrigger({
         prompt: (state) => `Translate to French: ${state.input}`,
         onResponse: (response, state) => {
           state.output = response;
-        }
-      }
-    )
-  ]
+        },
+      },
+    ),
+  ],
 });
 
 await agent.start();
@@ -116,14 +116,14 @@ import { createOpenAIAction } from '@agentiny/openai';
 const advancedAnalysis = createOpenAIAction(
   {
     apiKey: process.env.OPENAI_API_KEY!,
-    model: 'gpt-4' // Use GPT-4 for better quality
+    model: 'gpt-4', // Use GPT-4 for better quality
   },
   {
     prompt: (state) => `Advanced analysis: ${state.data}`,
     onResponse: (response, state) => {
       state.analysis = response;
-    }
-  }
+    },
+  },
 );
 ```
 
@@ -140,8 +140,8 @@ const creativeResponse = createOpenAIAction(
       state.story = response;
     },
     temperature: 1.5, // More creative (0-2 range)
-    maxTokens: 500    // Limit response length
-  }
+    maxTokens: 500, // Limit response length
+  },
 );
 ```
 
@@ -158,7 +158,7 @@ interface ProcessState {
 }
 
 const agent = new Agent<ProcessState>({
-  initialState: { text: 'Your text here' }
+  initialState: { text: 'Your text here' },
 });
 
 // Stage 1: Summarize
@@ -168,8 +168,8 @@ const summarize = createOpenAIAction(
     prompt: (state) => `Summarize: ${state.text}`,
     onResponse: (response, state) => {
       state.summary = response;
-    }
-  }
+    },
+  },
 );
 
 // Stage 2: Analyze sentiment
@@ -179,22 +179,22 @@ const analyzeSentiment = createOpenAIAction(
     prompt: (state) => `Analyze sentiment of: ${state.summary}`,
     onResponse: (response, state) => {
       state.sentiment = response;
-    }
-  }
+    },
+  },
 );
 
 // First trigger: summarize when text is provided
 agent.addTrigger({
   id: 'summarize-trigger',
   check: (state) => !!state.text && !state.summary,
-  actions: [summarize]
+  actions: [summarize],
 });
 
 // Second trigger: analyze after summarization
 agent.addTrigger({
   id: 'analyze-trigger',
   check: (state) => !!state.summary && !state.sentiment,
-  actions: [analyzeSentiment]
+  actions: [analyzeSentiment],
 });
 
 await agent.start();
@@ -208,14 +208,14 @@ import { createOpenAIAction } from '@agentiny/openai';
 const customAction = createOpenAIAction(
   {
     apiKey: process.env.CUSTOM_API_KEY!,
-    baseURL: 'https://your-custom-openai-endpoint.com/v1'
+    baseURL: 'https://your-custom-openai-endpoint.com/v1',
   },
   {
     prompt: (state) => `Process: ${state.data}`,
     onResponse: (response, state) => {
       state.result = response;
-    }
-  }
+    },
+  },
 );
 ```
 
@@ -234,10 +234,10 @@ agent.addTrigger({
         prompt: (state) => state.input,
         onResponse: (response, state) => {
           state.output = response;
-        }
-      }
-    )
-  ]
+        },
+      },
+    ),
+  ],
 });
 
 // Capture errors via agent's onError callback
@@ -245,7 +245,7 @@ const agent = new Agent<TextState>({
   initialState: { input: '' },
   onError: (error) => {
     console.error('Agent error:', error.message);
-  }
+  },
 });
 ```
 
@@ -274,8 +274,8 @@ const action: ActionFn<DataState> = createOpenAIAction(
     onResponse: (response, state) => {
       // state is typed as DataState
       state.processed = response;
-    }
-  }
+    },
+  },
 );
 ```
 

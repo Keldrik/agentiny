@@ -13,11 +13,20 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc"
   },
-  "keywords": ["agent", "anthropic", "adapter", "llm"],
+  "keywords": [
+    "agent",
+    "anthropic",
+    "adapter",
+    "llm"
+  ],
   "author": "Thomas Wiegold",
   "license": "MIT",
   "peerDependencies": {
@@ -33,7 +42,7 @@
     }
   },
   "devDependencies": {
-    "@agentiny/core": "workspace:*",
+    "@agentiny/core": "*",
     "@anthropic-ai/sdk": "^0.67.0",
     "@types/node": "^24.8.0",
     "typescript": "^5.9.3"

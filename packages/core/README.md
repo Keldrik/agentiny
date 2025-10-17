@@ -39,7 +39,7 @@ import { Agent } from '@agentiny/core';
 
 // Create an agent with initial state
 const agent = new Agent({
-  initialState: { count: 0, message: '' }
+  initialState: { count: 0, message: '' },
 });
 
 // Add a trigger using the low-level API
@@ -51,9 +51,9 @@ agent.addTrigger({
     (state) => {
       state.message = `Count is ${state.count}`;
       console.log(state.message);
-    }
+    },
   ],
-  repeat: true
+  repeat: true,
 });
 
 // Start the agent
@@ -78,7 +78,7 @@ const agent = new Agent({ initialState: { temperature: 0 } });
 // Repeat when temperature exceeds 30
 const triggerId = agent.when(
   (state) => state.temperature > 30,
-  [(state) => console.log('Temperature alarm:', state.temperature)]
+  [(state) => console.log('Temperature alarm:', state.temperature)],
 );
 
 await agent.start();
@@ -91,10 +91,7 @@ agent.setState({ temperature: 35 });
 const agent = new Agent({ initialState: { initialized: false } });
 
 // Fire only once when initialized
-agent.once(
-  (state) => state.initialized === true,
-  [(state) => console.log('System ready!')]
-);
+agent.once((state) => state.initialized === true, [(state) => console.log('System ready!')]);
 
 await agent.start();
 agent.setState({ initialized: true });
@@ -106,9 +103,7 @@ agent.setState({ initialized: true });
 const agent = new Agent({ initialState: {} });
 
 // Listen for specific events
-agent.on('user-login', [
-  (state) => console.log('User logged in!')
-]);
+agent.on('user-login', [(state) => console.log('User logged in!')]);
 
 await agent.start();
 agent.emitEvent('user-login');
@@ -127,6 +122,7 @@ new Agent<TState>(config?: AgentConfig<TState>)
 ```
 
 **Options:**
+
 - `initialState?: TState` - Initial state object
 - `triggers?: Trigger<TState>[]` - Initial triggers to register
 - `onError?: (error: Error) => void` - Error handler callback
@@ -168,9 +164,9 @@ Reactive state container with subscription support.
 ```typescript
 const state = new State<TState>(initialValue);
 
-state.get();                              // Get current value
-state.set(newValue);                      // Update value
-state.subscribe(callback);                // Subscribe to changes
+state.get(); // Get current value
+state.set(newValue); // Update value
+state.subscribe(callback); // Subscribe to changes
 ```
 
 ### Types
@@ -232,7 +228,7 @@ Configuration for creating an agent.
 enum AgentStatus {
   Idle = 'idle',
   Running = 'running',
-  Stopped = 'stopped'
+  Stopped = 'stopped',
 }
 ```
 
@@ -262,26 +258,27 @@ interface CounterState {
 }
 
 const agent = new Agent<CounterState>({
-  initialState: { count: 0, total: 0 }
+  initialState: { count: 0, total: 0 },
 });
 
 // Increment total every time count increases
 agent.when(
   (state) => state.count > state.total,
-  [(state) => { state.total = state.count; }]
+  [
+    (state) => {
+      state.total = state.count;
+    },
+  ],
 );
 
 // Log when count reaches 10
-agent.once(
-  (state) => state.count >= 10,
-  [(state) => console.log('Reached 10!')]
-);
+agent.once((state) => state.count >= 10, [(state) => console.log('Reached 10!')]);
 
 await agent.start();
 
 for (let i = 1; i <= 15; i++) {
   agent.setState({ count: i, total: 0 });
-  await new Promise(r => setTimeout(r, 100));
+  await new Promise((r) => setTimeout(r, 100));
 }
 
 await agent.stop();
@@ -298,7 +295,7 @@ interface AppState {
 }
 
 const app = new Agent<AppState>({
-  initialState: { user: null, message: '' }
+  initialState: { user: null, message: '' },
 });
 
 // Listen for login event
@@ -306,18 +303,20 @@ app.on('login', [
   (state) => {
     state.message = `Welcome ${state.user}!`;
     console.log(state.message);
-  }
+  },
 ]);
 
 // Listen for logout event with condition
 app.on(
   'logout',
   [(state) => state.user !== null], // condition
-  [(state) => {
-    state.message = `Goodbye ${state.user}!`;
-    state.user = null;
-    console.log(state.message);
-  }]
+  [
+    (state) => {
+      state.message = `Goodbye ${state.user}!`;
+      state.user = null;
+      console.log(state.message);
+    },
+  ],
 );
 
 await app.start();
@@ -339,11 +338,9 @@ agent.addTrigger({
   id: 'alert-trigger',
   check: (state) => state.critical === true,
   conditions: [(state) => state.critical],
-  actions: [
-    (state) => console.log('CRITICAL ALERT!')
-  ],
+  actions: [(state) => console.log('CRITICAL ALERT!')],
   delay: 5000, // Wait 5 seconds before executing
-  repeat: false // Execute only once
+  repeat: false, // Execute only once
 });
 
 await agent.start();
@@ -360,7 +357,7 @@ const agent = new Agent({
   initialState: { count: 0 },
   onError: (error) => {
     console.error('Agent error:', error.message);
-  }
+  },
 });
 
 agent.addTrigger({
@@ -369,9 +366,9 @@ agent.addTrigger({
   actions: [
     (state) => {
       throw new Error('Something went wrong!');
-    }
+    },
   ],
-  repeat: true
+  repeat: true,
 });
 
 await agent.start();
@@ -401,16 +398,18 @@ const agent = new Agent<AppState>({
   initialState: {
     user: null,
     isLoading: false,
-    errors: []
-  }
+    errors: [],
+  },
 });
 
 // Type-safe access in all callbacks
 agent.when(
   (state) => state.user !== null,
-  [(state) => {
-    console.log(state.user.name); // Fully typed!
-  }]
+  [
+    (state) => {
+      console.log(state.user.name); // Fully typed!
+    },
+  ],
 );
 ```
 

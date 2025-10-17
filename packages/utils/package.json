@@ -28,12 +28,22 @@
       "require": "./dist/validation.cjs"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": ["agent", "retry", "timeout", "validation", "utilities"],
+  "keywords": [
+    "agent",
+    "retry",
+    "timeout",
+    "validation",
+    "utilities"
+  ],
   "author": "Thomas Wiegold",
   "license": "MIT",
   "peerDependencies": {
@@ -48,7 +58,7 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
-    "@agentiny/core": "workspace:*",
+    "@agentiny/core": "*",
     "@types/node": "^24.8.0",
     "typescript": "^5.9.3"
   }

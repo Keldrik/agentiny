@@ -4,15 +4,17 @@
 All publishable code lives under `packages/`. Each package keeps its TypeScript sources in `src/` and emits compiled output to `dist/` via `tsc`. Use `packages/core` for the agent runtime, `packages/utils` for optional helpers, and `packages/openai`, `packages/anthropic`, and `packages/gemini` for provider adapters. Shared compiler options and path aliases live in `tsconfig.base.json`; extend them through the local `tsconfig.json` in each package and export new symbols from that package’s `src/index.ts`.
 
 ## Build, Test, and Development Commands
-Install dependencies inside the package you are editing; the repo does not ship a root manifest yet. Common workflows:
+Run `npm install` (requires `npm` ≥ 7; `packageManager` pins 11.6.2—use `corepack prepare npm@11.6.2 --activate` if needed) at the repo root to hydrate all workspaces. Key scripts:
 
 ```bash
-cd packages/core && npm install && npm run build
-cd packages/utils && npm run typecheck
-cd packages/openai && npm run build
+npm run build          # runs each package's build script via workspaces
+npm run typecheck      # runs package-level typecheck scripts when present
+npm run lint           # eslint across packages/**/src
+npm run format         # prettier --check across code and docs
+npm run format:write   # prettier --write for staged cleanup
 ```
 
-Run builds in dependency order (core → utils → adapters) to confirm cross-package imports.
+For quick loops, run package scripts directly (e.g. `cd packages/core && npm run build`).
 
 ## Coding Style & Naming Conventions
 Target ES2020 modules with strict TypeScript settings. Keep two-space indentation, avoid top-level side effects, and prefer named exports. Follow the existing naming style: `PascalCase` for classes such as `AgentError`, `camelCase` for functions and variables, and reserve `UPPER_SNAKE_CASE` for shared constants. Use concise JSDoc blocks when behaviour needs clarification.

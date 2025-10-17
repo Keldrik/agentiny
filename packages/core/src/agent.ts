@@ -21,7 +21,7 @@ export class AgentError extends Error {
   constructor(
     message: string,
     public readonly code: string,
-    public readonly context?: unknown
+    public readonly context?: unknown,
   ) {
     super(message);
     this.name = 'AgentError';
@@ -438,7 +438,7 @@ export class Agent<TState = unknown> {
     event: string,
     actionsOrConditions: readonly ActionFn<TState>[] | readonly ConditionFn<TState>[],
     actionsOrRepeat?: readonly ActionFn<TState>[] | boolean,
-    repeatOptional?: boolean
+    repeatOptional?: boolean,
   ): string {
     const triggerId = this._generateTriggerId();
 
@@ -518,7 +518,7 @@ export class Agent<TState = unknown> {
   when(
     check: TriggerFn<TState>,
     actionsOrConditions: readonly ActionFn<TState>[] | readonly ConditionFn<TState>[],
-    actionsOptional?: readonly ActionFn<TState>[]
+    actionsOptional?: readonly ActionFn<TState>[],
   ): string {
     const triggerId = this._generateTriggerId();
 
@@ -579,7 +579,7 @@ export class Agent<TState = unknown> {
   once(
     check: TriggerFn<TState>,
     actionsOrConditions: readonly ActionFn<TState>[] | readonly ConditionFn<TState>[],
-    actionsOptional?: readonly ActionFn<TState>[]
+    actionsOptional?: readonly ActionFn<TState>[],
   ): string {
     const triggerId = this._generateTriggerId();
 

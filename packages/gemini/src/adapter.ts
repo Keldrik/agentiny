@@ -85,7 +85,7 @@ export interface GeminiOptions<TState = unknown> {
  */
 export function createGeminiAction<TState = unknown>(
   config: GeminiConfig,
-  options: GeminiOptions<TState>
+  options: GeminiOptions<TState>,
 ): ActionFn<TState> {
   return async (state: TState): Promise<void> => {
     const model = config.model ?? 'gemini-1.5-flash';

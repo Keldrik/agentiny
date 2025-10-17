@@ -1,0 +1,20 @@
+{
+  "name": "agentiny",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "lint": "eslint \"packages/**/src/**/*.{ts,tsx}\"",
+    "format": "prettier --check \"{packages,examples}/**/*.{ts,tsx,js,json,md}\"",
+    "format:write": "prettier --write \"{packages,examples}/**/*.{ts,tsx,js,json,md}\""
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.3"
+  }
+}

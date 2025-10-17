@@ -55,7 +55,7 @@ import type { ActionFn } from './types';
  */
 export async function executeActions<TState>(
   actions: readonly ActionFn<TState>[],
-  state: TState
+  state: TState,
 ): Promise<Error[]> {
   const errors: Error[] = [];
 

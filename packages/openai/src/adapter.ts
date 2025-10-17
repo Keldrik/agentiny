@@ -87,7 +87,7 @@ export interface OpenAIOptions<TState = unknown> {
  */
 export function createOpenAIAction<TState = unknown>(
   config: OpenAIConfig,
-  options: OpenAIOptions<TState>
+  options: OpenAIOptions<TState>,
 ): ActionFn<TState> {
   return async (state: TState): Promise<void> => {
     // Dynamic import to handle module resolution in different environments

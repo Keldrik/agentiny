@@ -12,8 +12,8 @@ npm install @agentiny/core @agentiny/anthropic @anthropic-ai/sdk
 ## Quick Start
 
 ```typescript
-import { createAnthropicAction } from "@agentiny/anthropic";
-import { Agent } from "@agentiny/core";
+import { createAnthropicAction } from '@agentiny/anthropic';
+import { Agent } from '@agentiny/core';
 
 interface AnalysisState {
   data: string;
@@ -21,7 +21,7 @@ interface AnalysisState {
 }
 
 const agent = new Agent<AnalysisState>({
-  initialState: { data: "" },
+  initialState: { data: '' },
 });
 
 // Create an Anthropic action
@@ -31,14 +31,14 @@ const analyzeAction = createAnthropicAction(
     prompt: (state) => `Analyze this: ${state.data}`,
     onResponse: (response, state) => {
       state.analysis = response;
-      console.log("Analysis:", response);
+      console.log('Analysis:', response);
     },
-  }
+  },
 );
 
 // Add trigger to use the action
 agent.addTrigger({
-  id: "analyze-trigger",
+  id: 'analyze-trigger',
   check: (state) => !!state.data && !state.analysis,
   actions: [analyzeAction],
   repeat: false,
@@ -46,7 +46,7 @@ agent.addTrigger({
 
 // Start agent and set data
 await agent.start();
-agent.setState({ data: "What is Claude?" });
+agent.setState({ data: 'What is Claude?' });
 ```
 
 ## API
@@ -58,7 +58,6 @@ Creates an action function that calls the Anthropic API.
 #### Parameters
 
 - **config** - Anthropic configuration object
-
   - `apiKey` (string, required) - Anthropic API key
   - `model` (string, optional) - Model to use (default: `claude-3-haiku-20240307`)
   - `baseURL` (string, optional) - Custom API endpoint URL
@@ -78,8 +77,8 @@ An `ActionFn<TState>` that can be used in agent triggers.
 ### Basic Analysis
 
 ```typescript
-import { createAnthropicAction } from "@agentiny/anthropic";
-import { Agent } from "@agentiny/core";
+import { createAnthropicAction } from '@agentiny/anthropic';
+import { Agent } from '@agentiny/core';
 
 interface TextState {
   input: string;
@@ -87,11 +86,11 @@ interface TextState {
 }
 
 const agent = new Agent<TextState>({
-  initialState: { input: "Hello world" },
+  initialState: { input: 'Hello world' },
 });
 
 agent.addTrigger({
-  id: "translate",
+  id: 'translate',
   check: (state) => !!state.input && !state.output,
   actions: [
     createAnthropicAction(
@@ -101,7 +100,7 @@ agent.addTrigger({
         onResponse: (response, state) => {
           state.output = response;
         },
-      }
+      },
     ),
   ],
 });
@@ -112,26 +111,26 @@ await agent.start();
 ### Using Different Models
 
 ```typescript
-import { createAnthropicAction } from "@agentiny/anthropic";
+import { createAnthropicAction } from '@agentiny/anthropic';
 
 const advancedAnalysis = createAnthropicAction(
   {
     apiKey: process.env.ANTHROPIC_API_KEY!,
-    model: "claude-3-opus-20240229", // Use Claude 3 Opus for best quality
+    model: 'claude-3-opus-20240229', // Use Claude 3 Opus for best quality
   },
   {
     prompt: (state) => `Advanced analysis: ${state.data}`,
     onResponse: (response, state) => {
       state.analysis = response;
     },
-  }
+  },
 );
 ```
 
 ### With Temperature and Max Tokens
 
 ```typescript
-import { createAnthropicAction } from "@agentiny/anthropic";
+import { createAnthropicAction } from '@agentiny/anthropic';
 
 const creativeResponse = createAnthropicAction(
   { apiKey: process.env.ANTHROPIC_API_KEY! },
@@ -142,15 +141,15 @@ const creativeResponse = createAnthropicAction(
     },
     temperature: 0.8, // Creative (0-1 range)
     maxTokens: 500, // Limit response length
-  }
+  },
 );
 ```
 
 ### Chained Actions with Multiple Stages
 
 ```typescript
-import { createAnthropicAction } from "@agentiny/anthropic";
-import { Agent } from "@agentiny/core";
+import { createAnthropicAction } from '@agentiny/anthropic';
+import { Agent } from '@agentiny/core';
 
 interface ProcessState {
   text: string;
@@ -159,7 +158,7 @@ interface ProcessState {
 }
 
 const agent = new Agent<ProcessState>({
-  initialState: { text: "Your text here" },
+  initialState: { text: 'Your text here' },
 });
 
 // Stage 1: Summarize
@@ -170,7 +169,7 @@ const summarize = createAnthropicAction(
     onResponse: (response, state) => {
       state.summary = response;
     },
-  }
+  },
 );
 
 // Stage 2: Analyze sentiment
@@ -181,19 +180,19 @@ const analyzeSentiment = createAnthropicAction(
     onResponse: (response, state) => {
       state.sentiment = response;
     },
-  }
+  },
 );
 
 // First trigger: summarize when text is provided
 agent.addTrigger({
-  id: "summarize-trigger",
+  id: 'summarize-trigger',
   check: (state) => !!state.text && !state.summary,
   actions: [summarize],
 });
 
 // Second trigger: analyze after summarization
 agent.addTrigger({
-  id: "analyze-trigger",
+  id: 'analyze-trigger',
   check: (state) => !!state.summary && !state.sentiment,
   actions: [analyzeSentiment],
 });
@@ -204,19 +203,19 @@ await agent.start();
 ### Custom API Endpoint
 
 ```typescript
-import { createAnthropicAction } from "@agentiny/anthropic";
+import { createAnthropicAction } from '@agentiny/anthropic';
 
 const customAction = createAnthropicAction(
   {
     apiKey: process.env.CUSTOM_API_KEY!,
-    baseURL: "https://your-custom-endpoint.com",
+    baseURL: 'https://your-custom-endpoint.com',
   },
   {
     prompt: (state) => `Process: ${state.data}`,
     onResponse: (response, state) => {
       state.result = response;
     },
-  }
+  },
 );
 ```
 
@@ -233,14 +232,14 @@ Anthropic offers several Claude models:
 const action = createAnthropicAction(
   {
     apiKey: process.env.ANTHROPIC_API_KEY!,
-    model: "claude-3-sonnet-20240229",
+    model: 'claude-3-sonnet-20240229',
   },
   {
     prompt: (state) => `Analyze: ${state.data}`,
     onResponse: (response, state) => {
       state.result = response;
     },
-  }
+  },
 );
 ```
 
@@ -250,7 +249,7 @@ Errors from the Anthropic API are propagated and can be caught:
 
 ```typescript
 agent.addTrigger({
-  id: "api-call",
+  id: 'api-call',
   check: (state) => !!state.input,
   actions: [
     createAnthropicAction(
@@ -260,16 +259,16 @@ agent.addTrigger({
         onResponse: (response, state) => {
           state.output = response;
         },
-      }
+      },
     ),
   ],
 });
 
 // Capture errors via agent's onError callback
 const agent = new Agent<TextState>({
-  initialState: { input: "" },
+  initialState: { input: '' },
   onError: (error) => {
-    console.error("Agent error:", error.message);
+    console.error('Agent error:', error.message);
   },
 });
 ```
@@ -279,8 +278,8 @@ const agent = new Agent<TextState>({
 The adapter provides full TypeScript support with type-safe state handling:
 
 ```typescript
-import { createAnthropicAction } from "@agentiny/anthropic";
-import type { ActionFn } from "@agentiny/core";
+import { createAnthropicAction } from '@agentiny/anthropic';
+import type { ActionFn } from '@agentiny/core';
 
 interface DataState {
   input: string;
@@ -300,7 +299,7 @@ const action: ActionFn<DataState> = createAnthropicAction(
       // state is typed as DataState
       state.processed = response;
     },
-  }
+  },
 );
 ```
 

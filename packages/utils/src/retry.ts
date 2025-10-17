@@ -48,7 +48,7 @@ export interface RetryOptions {
  */
 export function withRetry<TState = unknown>(
   action: ActionFn<TState>,
-  options: RetryOptions
+  options: RetryOptions,
 ): ActionFn<TState> {
   const { attempts, backoff = 'exponential', delay = 1000 } = options;
 
