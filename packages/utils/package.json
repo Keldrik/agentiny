@@ -1,6 +1,6 @@
 {
   "name": "@agentiny/utils",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Optional utilities for @agentiny/core",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -34,7 +34,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsup",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

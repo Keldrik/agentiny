@@ -5,7 +5,6 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -ws --if-present",
     "typecheck": "npm run typecheck -ws --if-present",
     "lint": "eslint \"packages/**/src/**/*.{ts,tsx}\"",
     "format": "prettier --check \"{packages,examples}/**/*.{ts,tsx,js,json,md}\"",
@@ -15,6 +14,7 @@
     "@typescript-eslint/eslint-plugin": "^8.46.1",
     "@typescript-eslint/parser": "^8.46.1",
     "eslint": "^9.37.0",
-    "prettier": "^3.6.2"
+    "prettier": "^3.6.2",
+    "tsup": "^8.5.0"
   }
 }

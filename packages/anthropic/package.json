@@ -1,6 +1,6 @@
 {
   "name": "@agentiny/anthropic",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Anthropic adapter for @agentiny/core",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -19,7 +19,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "agent",
