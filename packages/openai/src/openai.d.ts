@@ -21,14 +21,14 @@ declare module 'openai' {
   }
 
   export interface ChatCompletionResponse {
-    choices: Array<{
+    choices: {
       message: {
         content: string;
         role: string;
       };
       finish_reason: string | null;
       index: number;
-    }>;
+    }[];
   }
 
   export interface ChatCompletionCreateParams {

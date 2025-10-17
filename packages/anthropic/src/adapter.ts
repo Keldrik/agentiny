@@ -105,7 +105,7 @@ export function createAnthropicAction<TState = unknown>(
     // Build request parameters
     const requestParams: {
       model: string;
-      messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+      messages: { role: 'user' | 'assistant'; content: string }[];
       max_tokens: number;
       temperature?: number;
     } = {

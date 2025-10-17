@@ -129,21 +129,21 @@ export function withSchema<TState = unknown>(
       }
 
       // Validate the state using the schema
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (schema as any).safeParse(state);
 
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (!(result as any).success) {
         throw new ValidationError(
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           `State validation failed: ${JSON.stringify((result as any).error?.errors)}`,
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (result as any).error?.errors,
         );
       }
 
       // Call the action with validated state
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unnecessary-type-assertion
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await Promise.resolve(action((result as any).data));
     } catch (error) {
       // If Zod is not installed

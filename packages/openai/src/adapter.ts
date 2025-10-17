@@ -110,7 +110,7 @@ export function createOpenAIAction<TState = unknown>(
     // Build request parameters
     const requestParams: {
       model: string;
-      messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
+      messages: { role: 'user' | 'assistant' | 'system'; content: string }[];
       max_tokens?: number;
       temperature?: number;
     } = {

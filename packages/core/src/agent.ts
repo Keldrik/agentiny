@@ -59,9 +59,9 @@ export class Agent<TState = unknown> {
   private _onError?: (error: Error) => void;
   private _executionLoop: Promise<void> | null = null;
   private _shouldRun = false;
-  private _triggersExecuted: Set<string> = new Set();
-  private _eventTriggers: Map<string, Set<string>> = new Map();
-  private _emittedEvents: Set<string> = new Set();
+  private _triggersExecuted = new Set<string>();
+  private _eventTriggers = new Map<string, Set<string>>();
+  private _emittedEvents = new Set<string>();
   private _triggerIdCounter = 0;
 
   /**
@@ -210,7 +210,7 @@ export class Agent<TState = unknown> {
    * await agent.start();
    * ```
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
+   
   async start(): Promise<void> {
     try {
       if (this._status === AgentStatusEnum.Running) {
@@ -456,7 +456,7 @@ export class Agent<TState = unknown> {
       // Overload: on(event, conditions, actions, repeat?)
 
       conditions = actionsOrConditions as readonly ConditionFn<TState>[];
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+       
       actions = actionsOrRepeat as readonly ActionFn<TState>[];
       repeat = repeatOptional ?? true;
     }
