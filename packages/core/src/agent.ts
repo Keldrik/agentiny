@@ -59,9 +59,10 @@ export class Agent<TState = unknown> {
   private _onError?: (error: Error) => void;
   private _executionLoop: Promise<void> | null = null;
   private _shouldRun = false;
-  private _triggersExecuted = new Set<string>();
+  private _stateChanged = true;
+  private _eventEmissionCount = new Map<string, number>();
+  private _eventLastSeenByTrigger = new Map<string, Map<string, number>>();
   private _eventTriggers = new Map<string, Set<string>>();
-  private _emittedEvents = new Set<string>();
   private _triggerIdCounter = 0;
 
   /**
@@ -75,6 +76,11 @@ export class Agent<TState = unknown> {
     this._triggers = new Map();
     this._status = AgentStatusEnum.Idle;
     this._onError = config.onError;
+
+    // Subscribe to state changes to trigger re-evaluation of triggers
+    this._state.subscribe(() => {
+      this._stateChanged = true;
+    });
 
     if (config.triggers) {
       config.triggers.forEach((trigger) => this.addTrigger(trigger));
@@ -182,6 +188,18 @@ export class Agent<TState = unknown> {
       });
     }
     this._triggers.delete(id);
+
+    // Clean up from event tracking maps
+    this._eventLastSeenByTrigger.forEach((triggerMap) => {
+      triggerMap.delete(id);
+    });
+    for (const [event, triggerIds] of this._eventTriggers.entries()) {
+      triggerIds.delete(id);
+      // Clean up empty entries
+      if (triggerIds.size === 0) {
+        this._eventTriggers.delete(event);
+      }
+    }
   }
 
   /**
@@ -210,7 +228,7 @@ export class Agent<TState = unknown> {
    * await agent.start();
    * ```
    */
-   
+
   async start(): Promise<void> {
     try {
       if (this._status === AgentStatusEnum.Running) {
@@ -221,12 +239,15 @@ export class Agent<TState = unknown> {
 
       this._status = AgentStatusEnum.Running;
       this._shouldRun = true;
-      this._triggersExecuted.clear();
+      this._stateChanged = true; // Evaluate triggers immediately on start
+      this._eventEmissionCount.clear();
+      this._eventLastSeenByTrigger.clear();
+      this._eventTriggers.clear();
 
       // Start the execution loop (fire and forget)
       this._executionLoop = this._runExecutionLoop();
     } catch (error) {
-      if (this._onError && error instanceof AgentError) {
+      if (this._onError && error instanceof Error) {
         this._onError(error);
       }
       throw error;
@@ -264,7 +285,7 @@ export class Agent<TState = unknown> {
         this._executionLoop = null;
       }
     } catch (error) {
-      if (this._onError && error instanceof AgentError) {
+      if (this._onError && error instanceof Error) {
         this._onError(error);
       }
       throw error;
@@ -284,13 +305,20 @@ export class Agent<TState = unknown> {
    * Internal execution loop that continuously checks and executes triggers.
    *
    * This method runs while the agent is running (_shouldRun is true). It:
-   * 1. Iterates through all registered triggers
-   * 2. Checks if each trigger's condition is met
-   * 3. Evaluates conditions if the trigger check passes
-   * 4. Executes actions if all conditions pass
-   * 5. Handles repeating vs one-time triggers
-   * 6. Applies delays before action execution
-   * 7. Collects and reports any errors
+   * 1. Checks if state has changed since the last evaluation (optimization)
+   * 2. If state changed, iterates through all registered triggers
+   * 3. Checks if each trigger's condition is met
+   * 4. Evaluates conditions if the trigger check passes
+   * 5. Executes actions if all conditions pass
+   * 6. Handles repeating vs one-time triggers
+   * 7. Applies delays before action execution
+   * 8. Collects and reports any errors
+   *
+   * Performance Optimization:
+   * - Only evaluates triggers when state changes, not on every poll cycle
+   * - Reduces CPU usage for agents with many triggers (100+)
+   * - Uses a subscription to the internal state to track changes
+   * - Maintains a 10ms polling interval as a fallback for edge cases
    *
    * @returns Promise that resolves when the loop exits
    */
@@ -299,14 +327,18 @@ export class Agent<TState = unknown> {
 
     while (this._shouldRun) {
       try {
-        const triggers = this.getAllTriggers();
+        // Only evaluate triggers if state has changed (optimization for many triggers)
+        if (this._stateChanged) {
+          this._stateChanged = false;
+          const triggers = this.getAllTriggers();
 
-        for (const trigger of triggers) {
-          if (!this._shouldRun) {
-            break; // Stop checking triggers if agent is stopping
+          for (const trigger of triggers) {
+            if (!this._shouldRun) {
+              break; // Stop checking triggers if agent is stopping
+            }
+
+            await this._checkAndExecuteTrigger(trigger);
           }
-
-          await this._checkAndExecuteTrigger(trigger);
         }
 
         // Small delay to prevent busy-waiting
@@ -374,8 +406,10 @@ export class Agent<TState = unknown> {
 
       // Handle one-time triggers (repeat: false)
       if (trigger.repeat === false) {
-        // Remove the trigger after execution
-        this.removeTrigger(trigger.id);
+        // Remove the trigger after execution (check exists in case of concurrent modifications)
+        if (this._triggers.has(trigger.id)) {
+          this.removeTrigger(trigger.id);
+        }
       }
     } catch (error) {
       // Catch any unexpected errors and report them
@@ -401,6 +435,10 @@ export class Agent<TState = unknown> {
   /**
    * Emit an event that triggers all event-based listeners
    *
+   * When an event is emitted, all registered event-based triggers for that event
+   * will fire once on the next polling cycle (within 10ms). Multiple triggers
+   * listening to the same event will all see the same emission.
+   *
    * @param event - The event name to emit
    *
    * @example
@@ -409,7 +447,10 @@ export class Agent<TState = unknown> {
    * ```
    */
   emitEvent(event: string): void {
-    this._emittedEvents.add(event);
+    const currentCount = this._eventEmissionCount.get(event) ?? 0;
+    this._eventEmissionCount.set(event, currentCount + 1);
+    // Signal that triggers should be evaluated for this event emission
+    this._stateChanged = true;
   }
 
   /**
@@ -456,7 +497,7 @@ export class Agent<TState = unknown> {
       // Overload: on(event, conditions, actions, repeat?)
 
       conditions = actionsOrConditions as readonly ConditionFn<TState>[];
-       
+
       actions = actionsOrRepeat as readonly ActionFn<TState>[];
       repeat = repeatOptional ?? true;
     }
@@ -465,11 +506,23 @@ export class Agent<TState = unknown> {
     const trigger: Trigger<TState> = {
       id: triggerId,
       check: (): boolean => {
-        const hasEvent = this._emittedEvents.has(event);
-        if (hasEvent) {
-          this._emittedEvents.delete(event);
+        const currentEmissionCount = this._eventEmissionCount.get(event) ?? 0;
+
+        // Get the last emission count this trigger saw for this event
+        let triggerEventMap = this._eventLastSeenByTrigger.get(event);
+        if (!triggerEventMap) {
+          triggerEventMap = new Map();
+          this._eventLastSeenByTrigger.set(event, triggerEventMap);
         }
-        return hasEvent;
+        const lastSeenCount = triggerEventMap.get(triggerId) ?? 0;
+
+        // Check if there's a new emission
+        if (currentEmissionCount > lastSeenCount) {
+          // Update the last seen count for this trigger
+          triggerEventMap.set(triggerId, currentEmissionCount);
+          return true;
+        }
+        return false;
       },
       conditions,
       actions,
@@ -478,13 +531,134 @@ export class Agent<TState = unknown> {
 
     this.addTrigger(trigger);
 
-    // Track the relationship between event and trigger
+    // Track this trigger as an event-based trigger for the given event
     if (!this._eventTriggers.has(event)) {
       this._eventTriggers.set(event, new Set());
     }
     this._eventTriggers.get(event)?.add(triggerId);
 
     return triggerId;
+  }
+
+  /**
+   * Remove a specific event-based trigger
+   *
+   * Removes a trigger that was created via the `on()` method. This is a convenience
+   * method that removes a trigger by event name and trigger ID, without needing to
+   * call `removeTrigger()` directly.
+   *
+   * @param event - The event name the trigger was listening to
+   * @param triggerId - The trigger ID returned from `on()`
+   * @throws {AgentError} If no trigger with the given ID exists
+   *
+   * @example
+   * ```typescript
+   * const id = agent.on('save', [saveAction]);
+   * // Later:
+   * agent.removeEventTrigger('save', id);
+   * ```
+   */
+  removeEventTrigger(_event: string, triggerId: string): void {
+    // event parameter kept for API clarity, even though it's not used internally
+    this.removeTrigger(triggerId);
+  }
+
+  /**
+   * Remove all event-based triggers for a specific event
+   *
+   * Removes all triggers that were created via the `on()` method for a given event name.
+   * This is useful for cleaning up multiple listeners at once.
+   *
+   * @param event - The event name to remove all triggers for
+   *
+   * @example
+   * ```typescript
+   * agent.on('save', [action1]);
+   * agent.on('save', [action2]);
+   * agent.on('save', [action3]);
+   * // Later, remove all listeners for 'save':
+   * agent.removeAllEventTriggersForEvent('save');
+   * ```
+   */
+  removeAllEventTriggersForEvent(event: string): void {
+    const triggerIds = this._eventTriggers.get(event);
+    if (triggerIds) {
+      // Create a copy of the set since removeTrigger will modify it
+      const triggerIdsCopy = Array.from(triggerIds);
+      for (const triggerId of triggerIdsCopy) {
+        this.removeTrigger(triggerId);
+      }
+    }
+  }
+
+  /**
+   * Get all event-based triggers for a specific event
+   *
+   * Returns the actual Trigger objects for all event-based triggers listening to a given event.
+   * This is useful for inspecting which triggers are registered for an event and their configuration.
+   *
+   * @param event - The event name to query
+   * @returns Array of Trigger objects for the given event
+   *
+   * @example
+   * ```typescript
+   * agent.on('login', [action1]);
+   * agent.on('login', [action2]);
+   * const triggers = agent.getEventTriggersForEvent('login');
+   * // triggers.length === 2
+   * // Can inspect trigger.repeat, trigger.delay, etc.
+   * ```
+   */
+  getEventTriggersForEvent(event: string): Trigger<TState>[] {
+    const triggerIds = this._eventTriggers.get(event);
+    if (!triggerIds) {
+      return [];
+    }
+    const triggers: Trigger<TState>[] = [];
+    for (const triggerId of triggerIds) {
+      const trigger = this._triggers.get(triggerId);
+      if (trigger) {
+        triggers.push(trigger);
+      }
+    }
+    return triggers;
+  }
+
+  /**
+   * Get all event-based triggers organized by event name
+   *
+   * Returns a map where keys are event names and values are arrays of Trigger objects.
+   * This is useful for getting a complete overview of all event-based triggers in the agent.
+   *
+   * @returns Map of event names to arrays of Trigger objects
+   *
+   * @example
+   * ```typescript
+   * agent.on('login', [action1]);
+   * agent.on('login', [action2]);
+   * agent.on('logout', [action3]);
+   * const allEventTriggers = agent.getEventTriggers();
+   * // allEventTriggers.get('login').length === 2
+   * // allEventTriggers.get('logout').length === 1
+   * ```
+   */
+  getEventTriggers(): Map<string, Trigger<TState>[]> {
+    const result = new Map<string, Trigger<TState>[]>();
+
+    for (const [event, triggerIds] of this._eventTriggers.entries()) {
+      const triggers: Trigger<TState>[] = [];
+      for (const triggerId of triggerIds) {
+        const trigger = this._triggers.get(triggerId);
+        if (trigger) {
+          triggers.push(trigger);
+        }
+      }
+      if (triggers.length > 0) {
+        result.set(event, triggers);
+      }
+    }
+
+    return result;
   }
 
   /**

@@ -417,17 +417,6 @@ agent.when(
 
 MIT
 
-## Contributing
-
-Contributions welcome! Please ensure all tests pass and maintain 100% coverage:
-
-```bash
-npm run typecheck  # Type checking
-npm run lint       # ESLint
-npm run format     # Prettier
-npm run test       # Vitest with coverage
-```
-
 ## See Also
 
 - [@agentiny/utils](../utils) - Utility functions and helpers

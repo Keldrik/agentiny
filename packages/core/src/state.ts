@@ -49,8 +49,20 @@ export class State<T> {
 
   /**
    * Notify all subscribers of state change
+   *
+   * Errors thrown by subscriber callbacks are caught and logged to console
+   * to prevent one subscriber's error from preventing other subscribers from
+   * being notified.
    */
   private _notify(): void {
-    this._subscribers.forEach((cb) => cb(this._value));
+    this._subscribers.forEach((cb) => {
+      try {
+        cb(this._value);
+      } catch (error) {
+        // Log error but continue notifying other subscribers
+        // eslint-disable-next-line no-undef
+        console.error('Error in state subscriber:', error);
+      }
+    });
   }
 }

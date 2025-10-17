@@ -1,6 +1,6 @@
 {
   "name": "@agentiny/core",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Lightweight TypeScript agent framework - core package",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -20,7 +20,9 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "keywords": [
     "agent",
@@ -30,10 +32,12 @@
     "reactive",
     "typescript"
   ],
-  "author": "",
+  "author": "Thomas Wiegold",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^24.8.0",
-    "typescript": "^5.9.3"
+    "@types/node": "^24.8.1",
+    "@vitest/ui": "^3.2.4",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
   }
 }
