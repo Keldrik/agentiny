@@ -1,6 +1,8 @@
 {
   "name": "@agentiny/core",
-  "version": "0.1.0",
+  "repository": "https://github.com/Keldrik/agentiny",
+  "publishConfig": { "access": "public" },
+  "version": "0.1.1",
   "description": "Lightweight TypeScript agent framework - core package",
   "type": "module",
   "main": "./dist/index.cjs",
