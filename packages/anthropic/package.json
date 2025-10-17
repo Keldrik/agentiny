@@ -1,0 +1,41 @@
+{
+  "name": "@agentiny/anthropic",
+  "version": "0.0.1",
+  "description": "Anthropic adapter for @agentiny/core",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": ["agent", "anthropic", "adapter", "llm"],
+  "author": "Thomas Wiegold",
+  "license": "MIT",
+  "peerDependencies": {
+    "@agentiny/core": "*",
+    "@anthropic-ai/sdk": "^0.13.0"
+  },
+  "peerDependenciesMeta": {
+    "@agentiny/core": {
+      "optional": false
+    },
+    "@anthropic-ai/sdk": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@agentiny/core": "workspace:*",
+    "@anthropic-ai/sdk": "^0.67.0",
+    "@types/node": "^24.8.0",
+    "typescript": "^5.9.3"
+  }
+}

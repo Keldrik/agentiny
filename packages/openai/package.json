@@ -1,0 +1,42 @@
+{
+  "name": "@agentiny/openai",
+  "version": "0.0.1",
+  "description": "OpenAI adapter for @agentiny/core",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["agent", "openai", "adapter", "llm"],
+  "author": "Thomas Wiegold",
+  "license": "MIT",
+  "peerDependencies": {
+    "@agentiny/core": "*",
+    "openai": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@agentiny/core": {
+      "optional": false
+    },
+    "openai": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@agentiny/core": "workspace:*",
+    "@types/node": "^24.8.0",
+    "openai": "^6.4.0",
+    "typescript": "^5.9.3"
+  }
+}

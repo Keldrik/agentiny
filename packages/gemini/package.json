@@ -1,0 +1,42 @@
+{
+  "name": "@agentiny/gemini",
+  "version": "0.0.1",
+  "description": "Google Gemini adapter for @agentiny/core",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["agent", "gemini", "google", "adapter", "llm"],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "@agentiny/core": "*",
+    "@google/generative-ai": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@agentiny/core": {
+      "optional": false
+    },
+    "@google/generative-ai": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@agentiny/core": "workspace:*",
+    "@google/generative-ai": "^0.24.1",
+    "@types/node": "^24.8.0",
+    "typescript": "^5.9.3"
+  }
+}

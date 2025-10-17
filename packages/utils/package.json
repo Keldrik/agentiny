@@ -1,0 +1,55 @@
+{
+  "name": "@agentiny/utils",
+  "version": "0.0.1",
+  "description": "Optional utilities for @agentiny/core",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./retry": {
+      "types": "./dist/retry.d.ts",
+      "import": "./dist/retry.js",
+      "require": "./dist/retry.cjs"
+    },
+    "./timeout": {
+      "types": "./dist/timeout.d.ts",
+      "import": "./dist/timeout.js",
+      "require": "./dist/timeout.cjs"
+    },
+    "./validation": {
+      "types": "./dist/validation.d.ts",
+      "import": "./dist/validation.js",
+      "require": "./dist/validation.cjs"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["agent", "retry", "timeout", "validation", "utilities"],
+  "author": "Thomas Wiegold",
+  "license": "MIT",
+  "peerDependencies": {
+    "@agentiny/core": "*"
+  },
+  "peerDependenciesMeta": {
+    "@agentiny/core": {
+      "optional": false
+    }
+  },
+  "optionalDependencies": {
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@agentiny/core": "workspace:*",
+    "@types/node": "^24.8.0",
+    "typescript": "^5.9.3"
+  }
+}
