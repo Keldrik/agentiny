@@ -1,6 +1,6 @@
 # @agentiny/gemini
 
-Google Generative AI integration adapter for [@agentiny/core](https://github.com/anthropics/agenTiny). Enables agents to interact with Google's Gemini API.
+Google Generative AI integration adapter for [@agentiny/core](https://github.com/Keldrik/agentiny). Enables agents to interact with Google's Gemini API.
 
 ## Installation
 
@@ -59,7 +59,7 @@ Creates an action function that calls the Gemini API.
 
 - **config** - Gemini configuration object
   - `apiKey` (string, required) - Google API key
-  - `model` (string, optional) - Model to use (default: `gemini-1.5-flash`)
+  - `model` (string, optional) - Model to use (default: `gemini-flash-latest`)
   - `baseURL` (string, optional) - Custom API endpoint URL
 
 - **options** - Action options object
@@ -202,18 +202,16 @@ await agent.start();
 
 ## Model Options
 
-Google offers several Gemini models:
+Google offers several Gemini models with different capabilities and pricing:
 
-- **gemini-1.5-flash** (default) - Fast and efficient, great for most tasks
-- **gemini-1.5-pro** - More capable, better for complex reasoning
-- **gemini-pro** - Previous generation, still available
+- **gemini-flash-latest** (default) - Latest Flash model, fastest and most efficient
 
 ```typescript
-// Using Gemini 1.5 Pro for complex reasoning
+// Using a specific model for complex reasoning
 const action = createGeminiAction(
   {
     apiKey: process.env.GOOGLE_API_KEY!,
-    model: 'gemini-1.5-pro',
+    model: 'gemini-2.5-pro', // Use latest models for best results
   },
   {
     prompt: (state) => `Analyze: ${state.data}`,

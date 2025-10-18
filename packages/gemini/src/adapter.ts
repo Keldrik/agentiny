@@ -10,7 +10,7 @@ export interface GeminiConfig {
    */
   apiKey: string;
   /**
-   * Model to use (default: gemini-1.5-flash)
+   * Model to use (default: gemini-flash-latest)
    */
   model?: string;
   /**
@@ -88,7 +88,7 @@ export function createGeminiAction<TState = unknown>(
   options: GeminiOptions<TState>,
 ): ActionFn<TState> {
   return async (state: TState): Promise<void> => {
-    const model = config.model ?? 'gemini-1.5-flash';
+    const model = config.model ?? 'gemini-flash-latest';
     const prompt = options.prompt(state);
 
     // Initialize Google Generative AI client with API key
@@ -111,8 +111,14 @@ export function createGeminiAction<TState = unknown>(
       generationConfig.temperature = options.temperature;
     }
 
-    // Call Gemini API with the prompt
-    const response = await generativeModel.generateContent(prompt, {
+    // Build request with proper Content structure
+    const request = {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }],
+        },
+      ],
       generationConfig:
         Object.keys(generationConfig).length > 0
           ? (generationConfig as {
@@ -120,7 +126,10 @@ export function createGeminiAction<TState = unknown>(
               temperature?: number;
             })
           : undefined,
-    });
+    };
+
+    // Call Gemini API with the prompt
+    const response = await generativeModel.generateContent(request);
 
     // Extract message content from response
     const messageContent = response.response.text();

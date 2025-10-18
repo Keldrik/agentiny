@@ -11,8 +11,10 @@
  * const agent = new Agent();
  * const llmAction = createGeminiAction(
  *   { apiKey: process.env.GOOGLE_API_KEY! },
- *   (state) => `Analyze: ${state.data}`,
- *   (response, state) => { state.analysis = response; }
+ *   {
+ *     prompt: (state) => `Analyze: ${state.data}`,
+ *     onResponse: (response, state) => { state.analysis = response; }
+ *   }
  * );
  * ```
  */

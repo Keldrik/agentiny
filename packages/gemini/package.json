@@ -1,7 +1,11 @@
 {
   "name": "@agentiny/gemini",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Google Gemini adapter for @agentiny/core",
+  "repository": "https://github.com/Keldrik/agentiny",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -33,7 +37,7 @@
   "license": "MIT",
   "peerDependencies": {
     "@agentiny/core": "*",
-    "@google/generative-ai": "^0.1.0"
+    "@google/generative-ai": "^0.24.1"
   },
   "peerDependenciesMeta": {
     "@agentiny/core": {
@@ -46,7 +50,7 @@
   "devDependencies": {
     "@agentiny/core": "*",
     "@google/generative-ai": "^0.24.1",
-    "@types/node": "^24.8.0",
+    "@types/node": "^24.8.1",
     "typescript": "^5.9.3"
   }
 }
