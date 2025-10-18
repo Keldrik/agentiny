@@ -11,8 +11,10 @@
  * const agent = new Agent();
  * const llmAction = createAnthropicAction(
  *   { apiKey: process.env.ANTHROPIC_API_KEY! },
- *   (state) => `Analyze: ${state.data}`,
- *   (response, state) => { state.analysis = response; }
+ *   {
+ *     prompt: (state) => `Analyze: ${state.data}`,
+ *     onResponse: (response, state) => { state.analysis = response; }
+ *   }
  * );
  * ```
  */

@@ -10,7 +10,7 @@ export interface AnthropicConfig {
    */
   apiKey: string;
   /**
-   * Model to use (default: claude-3-haiku-20240307)
+   * Model to use (default: claude-haiku-4-5)
    */
   model?: string;
   /**
@@ -88,7 +88,7 @@ export function createAnthropicAction<TState = unknown>(
   options: AnthropicOptions<TState>,
 ): ActionFn<TState> {
   return async (state: TState): Promise<void> => {
-    const model = config.model ?? 'claude-3-haiku-20240307';
+    const model = config.model ?? 'claude-haiku-4-5';
     const prompt = options.prompt(state);
 
     // Initialize Anthropic client with provided configuration

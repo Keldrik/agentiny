@@ -1,7 +1,11 @@
 {
   "name": "@agentiny/anthropic",
-  "version": "0.0.2",
-  "description": "Anthropic adapter for @agentiny/core",
+  "version": "0.1.0",
+  "description": "Anthropic Claude adapter for @agentiny/core",
+  "repository": "https://github.com/Keldrik/agentiny",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -26,13 +30,14 @@
     "agent",
     "anthropic",
     "adapter",
-    "llm"
+    "llm",
+    "claude"
   ],
   "author": "Thomas Wiegold",
   "license": "MIT",
   "peerDependencies": {
     "@agentiny/core": "*",
-    "@anthropic-ai/sdk": "^0.13.0"
+    "@anthropic-ai/sdk": "^0.67.0"
   },
   "peerDependenciesMeta": {
     "@agentiny/core": {
@@ -45,7 +50,7 @@
   "devDependencies": {
     "@agentiny/core": "*",
     "@anthropic-ai/sdk": "^0.67.0",
-    "@types/node": "^24.8.0",
+    "@types/node": "^24.8.1",
     "typescript": "^5.9.3"
   }
 }

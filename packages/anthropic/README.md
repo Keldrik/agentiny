@@ -1,6 +1,6 @@
 # @agentiny/anthropic
 
-Anthropic integration adapter for [@agentiny/core](https://github.com/anthropics/agenTiny). Enables agents to interact with Anthropic's Claude API.
+Anthropic integration adapter for [@agentiny/core](https://github.com/Keldrik/agentiny). Enables agents to interact with Anthropic's Claude API family.
 
 ## Installation
 
@@ -59,7 +59,7 @@ Creates an action function that calls the Anthropic API.
 
 - **config** - Anthropic configuration object
   - `apiKey` (string, required) - Anthropic API key
-  - `model` (string, optional) - Model to use (default: `claude-3-haiku-20240307`)
+  - `model` (string, optional) - Model to use (default: `claude-3-5-sonnet-20241022`)
   - `baseURL` (string, optional) - Custom API endpoint URL
 
 - **options** - Action options object
@@ -116,7 +116,7 @@ import { createAnthropicAction } from '@agentiny/anthropic';
 const advancedAnalysis = createAnthropicAction(
   {
     apiKey: process.env.ANTHROPIC_API_KEY!,
-    model: 'claude-3-opus-20240229', // Use Claude 3 Opus for best quality
+    model: 'claude-haiku-4-5', // Use Claude Opus 4 for best quality
   },
   {
     prompt: (state) => `Advanced analysis: ${state.data}`,
@@ -223,16 +223,16 @@ const customAction = createAnthropicAction(
 
 Anthropic offers several Claude models:
 
-- **claude-3-haiku-20240307** (default) - Fast and compact, ideal for simple tasks
-- **claude-3-sonnet-20240229** - Balanced performance and quality
-- **claude-3-opus-20240229** - Most capable, best for complex reasoning
+- **claude-haiku-4-5** - Fast and compact, ideal for simple tasks
+- **claude-sonnet-4-5** Balanced performance and quality
+- **claude-opus-4-1** - Most capable, best for complex reasoning
 
 ```typescript
-// Using Claude 3 Sonnet
+// Using Claude 3.5 Sonnet
 const action = createAnthropicAction(
   {
     apiKey: process.env.ANTHROPIC_API_KEY!,
-    model: 'claude-3-sonnet-20240229',
+    model: 'claude-sonnet-4-5',
   },
   {
     prompt: (state) => `Analyze: ${state.data}`,
@@ -245,12 +245,29 @@ const action = createAnthropicAction(
 
 ## Error Handling
 
-Errors from the Anthropic API are propagated and can be caught:
+Errors from the Anthropic API are propagated and can be caught via the agent's `onError` callback:
 
 ```typescript
+import { createAnthropicAction } from '@agentiny/anthropic';
+import { Agent } from '@agentiny/core';
+
+interface TextState {
+  input: string;
+  output?: string;
+}
+
+// Configure error handling
+const agent = new Agent<TextState>({
+  initialState: { input: '' },
+  onError: (error) => {
+    console.error('Agent error:', error.message);
+  },
+});
+
+// Add trigger with Anthropic action
 agent.addTrigger({
   id: 'api-call',
-  check: (state) => !!state.input,
+  check: (state) => !!state.input && !state.output,
   actions: [
     createAnthropicAction(
       { apiKey: process.env.ANTHROPIC_API_KEY! },
@@ -262,14 +279,6 @@ agent.addTrigger({
       },
     ),
   ],
-});
-
-// Capture errors via agent's onError callback
-const agent = new Agent<TextState>({
-  initialState: { input: '' },
-  onError: (error) => {
-    console.error('Agent error:', error.message);
-  },
 });
 ```
 
@@ -306,12 +315,12 @@ const action: ActionFn<DataState> = createAnthropicAction(
 ## Best Practices
 
 1. **Use environment variables for API keys** - Never hardcode secrets
-2. **Choose appropriate models** - Use Haiku for speed, Opus for quality
+2. **Choose appropriate models** - Use Haiku for speed/cost, Sonnet for balance, Opus for complex reasoning
 3. **Set temperature appropriately** - Lower (0.2-0.5) for deterministic tasks, higher (0.7-1.0) for creative
 4. **Set max tokens** - Use reasonable limits to control costs and response times
 5. **Handle errors** - Use agent's `onError` callback for error handling
-6. **Test thoroughly** - Write tests for your state transformations
-7. **Monitor usage** - Track token usage to manage costs
+6. **Test thoroughly** - Write tests for your state transformations and edge cases
+7. **Monitor usage** - Track API token usage to manage costs and performance
 
 ## Supported Features
 
