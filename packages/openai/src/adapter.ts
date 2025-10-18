@@ -12,7 +12,7 @@ export interface OpenAIConfig {
    */
   apiKey: string;
   /**
-   * Model to use (default: gpt-3.5-turbo)
+   * Model to use (default: gpt-5-nano-2025-08-07)
    */
   model?: string;
   /**
@@ -93,7 +93,7 @@ export function createOpenAIAction<TState = unknown>(
     // Dynamic import to handle module resolution in different environments
     const { OpenAI } = (await import('openai')) as { OpenAI: OpenAIType };
 
-    const model = config.model ?? 'gpt-3.5-turbo';
+    const model = config.model ?? 'gpt-5-nano-2025-08-07';
     const prompt = options.prompt(state);
 
     // Initialize OpenAI client with provided configuration

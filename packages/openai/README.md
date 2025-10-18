@@ -1,6 +1,19 @@
 # @agentiny/openai
 
-OpenAI integration adapter for @agentiny/core. Enables agents to interact with OpenAI's chat completion API.
+OpenAI integration adapter for [@agentiny/core](https://www.npmjs.com/package/@agentiny/core). Enables agents to interact with OpenAI's chat completion API through the agenTiny agent framework.
+
+This adapter allows you to build reactive agents that can call OpenAI's LLMs as part of trigger-condition-action flows, enabling sophisticated multi-step AI workflows.
+
+## About agenTiny
+
+**agenTiny** is a lightweight TypeScript agent framework (< 5KB gzipped) for building reactive agents using trigger-condition-action flows. It features:
+
+- ⚡ Zero runtime dependencies (for core)
+- 🎯 Type-safe state management
+- 🔄 Full async/await support
+- 🎨 Clean, reactive trigger system
+
+For more information, see [agenTiny on npm](https://www.npmjs.com/package/@agentiny/core) or the [GitHub repository](https://github.com/Keldrik/agentiny).
 
 ## Installation
 
@@ -8,6 +21,19 @@ OpenAI integration adapter for @agentiny/core. Enables agents to interact with O
 # Install @agentiny/core and this adapter
 npm install @agentiny/core @agentiny/openai openai
 ```
+
+### Requirements
+
+- **Node.js** 18+ (or equivalent runtime with top-level await support)
+- **@agentiny/core** ^0.1.2
+- **openai** ^6.5.0 (tested with 6.5.0)
+
+### Other Adapters
+
+If you prefer other LLM providers, agenTiny also provides:
+
+- [@agentiny/anthropic](https://www.npmjs.com/package/@agentiny/anthropic) - Claude models via Anthropic
+- [@agentiny/gemini](https://www.npmjs.com/package/@agentiny/gemini) - Google Gemini models
 
 ## Quick Start
 
@@ -116,7 +142,7 @@ import { createOpenAIAction } from '@agentiny/openai';
 const advancedAnalysis = createOpenAIAction(
   {
     apiKey: process.env.OPENAI_API_KEY!,
-    model: 'gpt-4', // Use GPT-4 for better quality
+    model: 'gpt-5-2025-08-07',
   },
   {
     prompt: (state) => `Advanced analysis: ${state.data}`,
@@ -288,6 +314,51 @@ const action: ActionFn<DataState> = createOpenAIAction(
 5. **Handle errors** - Use agent's `onError` callback for error handling
 6. **Test thoroughly** - Write tests for your state transformations
 
+## Troubleshooting
+
+### "API key is missing or invalid"
+
+- Ensure `OPENAI_API_KEY` environment variable is set with a valid API key
+- Check that your API key has the necessary permissions
+- Verify you're using an API key (not your account password)
+
+### "Error: Cannot find module 'openai'"
+
+- Ensure `openai` is installed: `npm install openai`
+- Remember that `openai` is a peer dependency and must be installed separately
+
+### "Model not found" error
+
+- Verify the model name is correct and available in your OpenAI account
+
+### "Rate limit exceeded"
+
+- Implement retry logic with exponential backoff
+- Consider using `@agentiny/utils` for the `withRetry` wrapper
+- Spread out API calls using the `delay` trigger option
+
+## API Reference
+
+For detailed API documentation:
+
+- Check [@agentiny/core documentation](https://www.npmjs.com/package/@agentiny/core) for Agent API
+- See [OpenAI API Reference](https://platform.openai.com/docs/api-reference) for model details
+
+## Contributing
+
+Contributions are welcome! Please ensure:
+
+- Code passes TypeScript strict mode checks
+- ESLint rules are followed
+- Changes are well-documented
+
 ## License
 
 MIT
+
+## See Also
+
+- [@agentiny/core](https://www.npmjs.com/package/@agentiny/core) - Core agent framework
+- [@agentiny/anthropic](https://www.npmjs.com/package/@agentiny/anthropic) - Anthropic adapter
+- [@agentiny/gemini](https://www.npmjs.com/package/@agentiny/gemini) - Google Gemini adapter
+- [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)

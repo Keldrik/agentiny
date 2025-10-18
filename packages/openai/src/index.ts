@@ -8,12 +8,23 @@
  * import { createOpenAIAction } from '@agentiny/openai';
  * import { Agent } from '@agentiny/core';
  *
- * const agent = new Agent();
- * const llmAction = createOpenAIAction(
+ * const agent = new Agent({
+ *   initialState: { data: '' }
+ * });
+ *
+ * const analyzeAction = createOpenAIAction(
  *   { apiKey: process.env.OPENAI_API_KEY! },
- *   (state) => `Analyze: ${state.data}`,
- *   (response, state) => { state.analysis = response; }
+ *   {
+ *     prompt: (state) => `Analyze: ${state.data}`,
+ *     onResponse: (response, state) => { state.analysis = response; }
+ *   }
  * );
+ *
+ * agent.addTrigger({
+ *   id: 'analyze',
+ *   check: (state) => !!state.data && !state.analysis,
+ *   actions: [analyzeAction]
+ * });
  * ```
  */
 

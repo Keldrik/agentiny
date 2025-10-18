@@ -1,7 +1,11 @@
 {
   "name": "@agentiny/openai",
-  "version": "0.0.2",
+  "version": "0.1.1",
   "description": "OpenAI adapter for @agentiny/core",
+  "repository": "https://github.com/Keldrik/agentiny",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -32,7 +36,7 @@
   "license": "MIT",
   "peerDependencies": {
     "@agentiny/core": "*",
-    "openai": "^4.0.0"
+    "openai": "^6.5.0"
   },
   "peerDependenciesMeta": {
     "@agentiny/core": {
@@ -44,8 +48,8 @@
   },
   "devDependencies": {
     "@agentiny/core": "*",
-    "@types/node": "^24.8.0",
-    "openai": "^6.4.0",
+    "@types/node": "^24.8.1",
+    "openai": "^6.5.0",
     "typescript": "^5.9.3"
   }
 }
