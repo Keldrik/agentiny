@@ -1,7 +1,11 @@
 {
   "name": "@agentiny/utils",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Optional utilities for @agentiny/core",
+  "repository": "https://github.com/Keldrik/agentiny",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -59,7 +63,7 @@
   },
   "devDependencies": {
     "@agentiny/core": "*",
-    "@types/node": "^24.8.0",
+    "@types/node": "^24.8.1",
     "typescript": "^5.9.3"
   }
 }

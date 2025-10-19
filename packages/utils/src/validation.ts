@@ -39,7 +39,7 @@ export interface ValidationOptions<T = unknown> {
  * @param options - Validation options
  * @returns Wrapped action with validation
  *
- * @throws {Error} If validation fails
+ * @throws {ValidationError} If validation fails
  *
  * @example
  * ```typescript
@@ -75,7 +75,7 @@ export function withValidation<TState = unknown>(
 ): ActionFn<unknown> {
   return async (state: unknown): Promise<void> => {
     if (!options.validate(state)) {
-      throw new Error('State validation failed');
+      throw new ValidationError('State validation failed');
     }
     await Promise.resolve(action(state));
   };
@@ -146,16 +146,6 @@ export function withSchema<TState = unknown>(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await Promise.resolve(action((result as any).data));
     } catch (error) {
-      // If Zod is not installed
-      if (
-        error instanceof SyntaxError ||
-        (error instanceof Error && error.message.includes('Cannot find module'))
-      ) {
-        throw new Error(
-          'Zod is required for withSchema but not installed. ' + 'Install it with: npm install zod',
-        );
-      }
-
       // Re-throw validation errors as-is
       if (error instanceof ValidationError) {
         throw error;

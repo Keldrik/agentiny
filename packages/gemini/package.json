@@ -33,7 +33,7 @@
     "adapter",
     "llm"
   ],
-  "author": "",
+  "author": "Thomas Wiegold",
   "license": "MIT",
   "peerDependencies": {
     "@agentiny/core": "*",
