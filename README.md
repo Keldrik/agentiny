@@ -173,8 +173,9 @@ Functions that **do something** when triggered:
 ✅ **Flexible** - Repeating triggers, one-time triggers, event-based triggers
 ✅ **Async/Await** - Full async support for all operations
 ✅ **Small Bundle** - Less than 5KB minified + gzipped
-✅ **Well-Tested** - 124+ comprehensive tests
+✅ **Well-Tested** - 152+ comprehensive tests
 ✅ **Performance** - Smart state change tracking for efficiency
+✅ **Cascading Support** - Wait for all cascading actions to complete
 
 ## Development
 
@@ -282,6 +283,42 @@ const aiAction = createAnthropicAction({
 
 const agent = new Agent({ initialState: { data: '' } });
 agent.when((state) => state.data.length > 0, [aiAction]);
+```
+
+### Waiting for Cascading Actions
+
+The new `settle()` method allows you to wait for all cascading trigger-action flows to complete:
+
+```typescript
+import { Agent } from '@agentiny/core';
+
+interface DocumentState {
+  status: 'ready' | 'processing' | 'processed' | 'archived';
+}
+
+const agent = new Agent<DocumentState>({ initialState: { status: 'ready' } });
+
+// Step 1: Ready → Processing
+agent.when((state) => state.status === 'ready', [
+  (state) => { state.status = 'processing'; }
+]);
+
+// Step 2: Processing → Processed
+agent.when((state) => state.status === 'processing', [
+  (state) => { state.status = 'processed'; }
+]);
+
+// Step 3: Processed → Archived
+agent.when((state) => state.status === 'processed', [
+  (state) => { state.status = 'archived'; }
+]);
+
+await agent.start();
+agent.setState({ status: 'ready' });
+
+// Wait for all cascading actions to complete
+await agent.settle();
+console.log(agent.getState()); // { status: 'archived' }
 ```
 
 ## Performance Metrics

@@ -29,6 +29,16 @@ export class AgentError extends Error {
 }
 
 /**
+ * Internal interface for tracking pending settle() promises
+ */
+interface SettleResolver {
+  quietCycles: number;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeoutId?: ReturnType<typeof setTimeout>;
+}
+
+/**
  * Core agent implementation for trigger-condition-action flows
  *
  * @template TState - The type of the agent's state object
@@ -64,6 +74,8 @@ export class Agent<TState = unknown> {
   private _eventLastSeenByTrigger = new Map<string, Map<string, number>>();
   private _eventTriggers = new Map<string, Set<string>>();
   private _triggerIdCounter = 0;
+  private _consecutiveQuietCycles = 0;
+  private _settleResolvers: SettleResolver[] = [];
 
   /**
    * Create a new Agent instance
@@ -240,6 +252,7 @@ export class Agent<TState = unknown> {
       this._status = AgentStatusEnum.Running;
       this._shouldRun = true;
       this._stateChanged = true; // Evaluate triggers immediately on start
+      this._consecutiveQuietCycles = 0; // Reset quiet cycle counter
       this._eventEmissionCount.clear();
       this._eventLastSeenByTrigger.clear();
       this._eventTriggers.clear();
@@ -279,6 +292,19 @@ export class Agent<TState = unknown> {
       this._status = AgentStatusEnum.Stopped;
       this._shouldRun = false;
 
+      // Reject all pending settle promises
+      const settleError = new AgentError('Agent stopped while waiting to settle', 'AGENT_STOPPED', {
+        pendingSettles: this._settleResolvers.length,
+      });
+
+      for (const resolver of this._settleResolvers) {
+        if (resolver.timeoutId) {
+          clearTimeout(resolver.timeoutId);
+        }
+        resolver.reject(settleError);
+      }
+      this._settleResolvers = [];
+
       // Wait for the execution loop to finish
       if (this._executionLoop) {
         await this._executionLoop;
@@ -299,6 +325,91 @@ export class Agent<TState = unknown> {
    */
   isRunning(): boolean {
     return this._status === AgentStatusEnum.Running;
+  }
+
+  /**
+   * Wait for all pending actions and cascading triggers to complete
+   *
+   * Returns a promise that resolves when the agent has been quiet for the specified
+   * number of consecutive polling cycles. This is useful for waiting until all cascading
+   * trigger-action flows have settled before continuing.
+   *
+   * The function uses a "consecutive quiet cycles" model: after each polling cycle where
+   * no state changes occurred, the quiet cycle counter increments. Once it reaches the
+   * requested number, all cascading effects are complete.
+   *
+   * @param quietCycles - Number of consecutive quiet cycles to wait for (default: 2, ~20ms)
+   * @param timeout - Maximum time to wait in milliseconds (default: 10000, 10 seconds)
+   * @returns Promise that resolves when settle conditions are met
+   * @throws {AgentError} If agent is not running
+   * @throws {Error} If timeout is exceeded before settling
+   *
+   * @example
+   * ```typescript
+   * agent.setState({ document: readFile() });
+   * await agent.settle(); // Wait for all cascading actions
+   * console.log('All actions complete!');
+   * ```
+   */
+  settle(quietCycles = 2, timeout = 10000): Promise<void> {
+    if (!this.isRunning()) {
+      throw new AgentError('Agent must be running to settle', 'AGENT_NOT_RUNNING', {
+        currentStatus: this._status,
+      });
+    }
+
+    if (quietCycles <= 0) {
+      throw new AgentError('quietCycles must be a positive integer', 'INVALID_ARGUMENT', {
+        quietCycles,
+      });
+    }
+
+    // If already quiet enough, resolve immediately
+    if (this._consecutiveQuietCycles >= quietCycles) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const resolver: SettleResolver = {
+        quietCycles,
+        resolve,
+        reject,
+      };
+
+      resolver.timeoutId = setTimeout(() => {
+        // Remove from resolvers
+        this._settleResolvers = this._settleResolvers.filter((r) => r !== resolver);
+        reject(
+          new AgentError(
+            `settle() timed out after ${timeout}ms waiting for ${quietCycles} quiet cycles`,
+            'SETTLE_TIMEOUT',
+            { timeout, quietCycles, currentQuietCycles: this._consecutiveQuietCycles },
+          ),
+        );
+      }, timeout);
+
+      this._settleResolvers.push(resolver);
+    });
+  }
+
+  /**
+   * Internal method to check and resolve settle promises
+   *
+   * Called each quiet cycle to check if any pending settle promises can be resolved.
+   */
+  private _checkSettleResolvers(): void {
+    // Filter out resolved promises
+    this._settleResolvers = this._settleResolvers.filter((resolver) => {
+      if (this._consecutiveQuietCycles >= resolver.quietCycles) {
+        // This resolver can be satisfied
+        if (resolver.timeoutId) {
+          clearTimeout(resolver.timeoutId);
+        }
+        resolver.resolve();
+        return false; // Remove from array
+      }
+      return true; // Keep in array
+    });
   }
 
   /**
@@ -327,6 +438,9 @@ export class Agent<TState = unknown> {
 
     while (this._shouldRun) {
       try {
+        // Track if state changed at the start of this cycle
+        const stateChangedThisCycle = this._stateChanged;
+
         // Only evaluate triggers if state has changed (optimization for many triggers)
         if (this._stateChanged) {
           this._stateChanged = false;
@@ -341,8 +455,17 @@ export class Agent<TState = unknown> {
           }
         }
 
-        // Small delay to prevent busy-waiting
+        // Track quiet cycles for settle() functionality
+        if (stateChangedThisCycle) {
+          // State changed, so we did an evaluation. Reset quiet counter.
+          this._consecutiveQuietCycles = 0;
+        } else {
+          // State didn't change, so no evaluation happened. Increment quiet counter.
+          this._consecutiveQuietCycles++;
+          this._checkSettleResolvers();
+        }
 
+        // Small delay to prevent busy-waiting
         await new Promise((resolve) => {
           setTimeout(resolve, pollInterval);
         });

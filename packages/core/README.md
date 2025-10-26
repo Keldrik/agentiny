@@ -22,15 +22,17 @@
 - **Event-Driven Architecture** - Reactive trigger system with state management
 - **Three Trigger Types** - Repeating state-based triggers, one-time triggers, and event-based triggers
 - **Async/Await Support** - Full async support for all checks, conditions, and actions
+- **Cascading Action Support** - Wait for all cascading trigger-action flows to complete with `settle()`
 - **Small Bundle Size** - Less than 5KB minified + gzipped
 - **Performance Optimized** - Smart state change tracking minimizes unnecessary evaluations
-- **Well-Tested** - 124+ comprehensive tests with vitest
+- **Well-Tested** - 152+ comprehensive tests with vitest
 
 ## Quick Navigation
 
 - [Installation](#installation) - Get started in seconds
 - [Quick Start](#quick-start) - See working examples
 - [API Reference](#api-reference) - Complete method documentation
+- [settle()](#settle---waiting-for-cascading-actions) - Wait for cascading actions
 - [Best Practices](#best-practices) - Design patterns and tips
 - [Performance](#performance--optimization) - How it's optimized
 - [Examples](#examples) - Real-world use cases
@@ -173,6 +175,7 @@ new Agent<TState>(config?: AgentConfig<TState>)
 - `stop(): Promise<void>` - Stop the agent
 - `isRunning(): boolean` - Check if agent is running
 - `getStatus(): AgentStatus` - Get current status
+- `settle(quietCycles?: number, timeout?: number): Promise<void>` - Wait for all cascading actions to complete
 
 ##### Convenience Methods
 
@@ -273,6 +276,127 @@ Custom error class for agent-related errors.
 class AgentError extends Error {
   code: string;
   context?: unknown;
+}
+```
+
+## settle() - Waiting for Cascading Actions
+
+The `settle()` method allows you to wait for all cascading trigger-action flows to complete. This is essential when one action's state changes trigger additional actions, creating a chain of effects.
+
+### Why Use settle()?
+
+When you update the agent's state, it might trigger multiple cascading actions:
+
+```
+setState(state1)
+  ↓
+Trigger 1 fires, executes action → setState(state2)
+  ↓
+Trigger 2 fires, executes action → setState(state3)
+  ↓
+Trigger 3 fires, executes action
+  ↓
+No more state changes (settled)
+```
+
+Without `settle()`, you won't know when all cascading effects are complete. `settle()` solves this elegantly by detecting when the agent has been quiet for N consecutive polling cycles.
+
+### Method Signature
+
+```typescript
+settle(quietCycles = 2, timeout = 10000): Promise<void>
+```
+
+**Parameters:**
+- `quietCycles` (optional, default: 2) - Number of consecutive polling cycles with no state changes required before settling (each cycle is ~10ms, so default is ~20ms)
+- `timeout` (optional, default: 10000) - Maximum time to wait in milliseconds before rejecting with a timeout error
+
+**Returns:** Promise that resolves when the agent is quiet, or rejects on timeout/error
+
+**Throws:**
+- `AgentError` with code `'AGENT_NOT_RUNNING'` if agent is not running
+- `AgentError` with code `'INVALID_ARGUMENT'` if quietCycles <= 0
+- `AgentError` with code `'SETTLE_TIMEOUT'` if timeout is exceeded
+- `AgentError` with code `'AGENT_STOPPED'` if agent stops while waiting
+
+### Examples
+
+#### Basic Usage
+
+```typescript
+const agent = new Agent({ initialState: { count: 1 } });
+
+agent.when((state) => state.count < 3, [
+  (state) => { state.count++; }
+]);
+
+await agent.start();
+agent.setState({ count: 1 });
+
+// Wait for all cascading actions (cascades: 1 → 2 → 3)
+await agent.settle();
+
+console.log(agent.getState().count); // 3
+await agent.stop();
+```
+
+#### Multi-Step Workflow
+
+```typescript
+interface WorkflowState {
+  stage: 'init' | 'processing' | 'validating' | 'complete';
+}
+
+const agent = new Agent<WorkflowState>({
+  initialState: { stage: 'init' }
+});
+
+// Stage 1: init → processing
+agent.when((state) => state.stage === 'init', [
+  (state) => { state.stage = 'processing'; console.log('Processing...'); }
+]);
+
+// Stage 2: processing → validating
+agent.when((state) => state.stage === 'processing', [
+  (state) => { state.stage = 'validating'; console.log('Validating...'); }
+]);
+
+// Stage 3: validating → complete
+agent.when((state) => state.stage === 'validating', [
+  (state) => { state.stage = 'complete'; console.log('Complete!'); }
+]);
+
+await agent.start();
+agent.setState({ stage: 'init' });
+
+// Wait for all 3 cascading actions to complete
+await agent.settle();
+console.log(agent.getState()); // { stage: 'complete' }
+```
+
+#### Custom Quiet Cycles
+
+```typescript
+// Require 5 quiet cycles (~50ms) instead of default 2
+await agent.settle(5);
+
+// Custom timeout (5 seconds instead of 10)
+await agent.settle(2, 5000);
+```
+
+#### Error Handling
+
+```typescript
+try {
+  // Try to settle with impossible requirements
+  await agent.settle(100, 50); // 100 cycles in 50ms
+} catch (error) {
+  if (error instanceof AgentError) {
+    if (error.code === 'SETTLE_TIMEOUT') {
+      console.log('Timed out waiting for agent to settle');
+      console.log('Quiet cycles so far:', error.context.currentQuietCycles);
+    }
+  }
 }
 ```
 
@@ -379,6 +503,54 @@ agent.setState({ critical: true });
 // Will log "CRITICAL ALERT!" after 5 seconds, then remove trigger
 ```
 
+### Cascading Actions with settle()
+
+```typescript
+import { Agent } from '@agentiny/core';
+
+interface ProcessingState {
+  stage: 'input' | 'processing' | 'validating' | 'output';
+  data: string;
+}
+
+const agent = new Agent<ProcessingState>({
+  initialState: { stage: 'input', data: '' },
+});
+
+// Input → Processing
+agent.when((state) => state.stage === 'input' && state.data.length > 0, [
+  (state) => {
+    console.log('Processing data...');
+    state.stage = 'processing';
+  },
+]);
+
+// Processing → Validating
+agent.when((state) => state.stage === 'processing', [
+  (state) => {
+    console.log('Validating data...');
+    state.stage = 'validating';
+  },
+]);
+
+// Validating → Output
+agent.when((state) => state.stage === 'validating', [
+  (state) => {
+    console.log('Data ready!');
+    state.stage = 'output';
+  },
+]);
+
+await agent.start();
+agent.setState({ stage: 'input', data: 'important data' });
+
+// Wait for all cascading actions to complete
+await agent.settle();
+
+console.log(agent.getState()); // { stage: 'output', data: 'important data' }
+await agent.stop();
+```
+
 ## Performance & Optimization
 
 @agentiny/core is built with performance in mind:
@@ -405,7 +577,7 @@ Tested with 100+ triggers with no performance degradation. The polling architect
 
 ## Testing
 
-The package includes 124+ comprehensive tests covering:
+The package includes 152+ comprehensive tests covering:
 
 - All agent lifecycle methods
 - State management and subscriptions
@@ -512,6 +684,21 @@ Perfect for one-time setup tasks:
 
 ```typescript
 agent.once((state) => state.initialized === true, [(state) => console.log('System initialized')]);
+```
+
+### 6. Use settle() for Cascading Actions
+
+When you have triggers that cascade (actions that trigger more actions), use `settle()` to wait for all effects to complete:
+
+```typescript
+// Trigger a chain of actions
+agent.setState({ stage: 'start' });
+
+// Wait for all cascading actions to finish
+await agent.settle();
+
+// Now safe to proceed knowing all effects are done
+console.log('All cascading actions complete!');
 ```
 
 ## Performance Characteristics

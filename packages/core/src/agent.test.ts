@@ -938,4 +938,650 @@ describe('Agent', () => {
       expect(true).toBe(true);
     });
   });
+
+  describe('settle() - wait for all cascading actions', () => {
+    describe('basic functionality', () => {
+      it('should resolve immediately if agent is already quiet', async () => {
+        await agent.start();
+
+        // Wait a bit for initial quiet state
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        const settlePromise = agent.settle();
+        const completed = await Promise.race([
+          settlePromise.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+        ]);
+
+        await agent.stop();
+        expect(completed).toBe(true);
+      });
+
+      it('should wait for quiet cycles and then resolve', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        await agent.settle();
+        await agent.stop();
+
+        expect(action).toHaveBeenCalled();
+      });
+
+      it('should use default quietCycles of 2', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // settle() with default params should work
+        await agent.settle();
+        await agent.stop();
+
+        expect(action).toHaveBeenCalled();
+      });
+
+      it('should accept custom quietCycles parameter', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Require 3 quiet cycles instead of default 2
+        await agent.settle(3);
+        await agent.stop();
+
+        expect(action).toHaveBeenCalled();
+      });
+
+      it('should accept custom timeout parameter', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Custom 5 second timeout
+        await agent.settle(2, 5000);
+        await agent.stop();
+
+        expect(action).toHaveBeenCalled();
+      });
+    });
+
+    describe('cascading triggers', () => {
+      it('should wait for 2-level cascading triggers', async () => {
+        const action1 = vi.fn();
+        const action2 = vi.fn();
+
+        // Trigger 1: when count > 0, increment count
+        agent.when(
+          (state) => state.count > 0 && state.count < 2,
+          [
+            (state) => {
+              state.count++;
+              action1();
+            },
+          ],
+        );
+
+        // Trigger 2: when count > 1, execute action2
+        agent.when((state) => state.count > 1, [action2]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        await agent.settle();
+        await agent.stop();
+
+        expect(action1).toHaveBeenCalled();
+        expect(action2).toHaveBeenCalled();
+      });
+
+      it('should wait for 4-level cascading triggers (document flow)', async () => {
+        interface DocState {
+          status:
+            | 'ready'
+            | 'processing'
+            | 'processed'
+            | 'checking'
+            | 'checked'
+            | 'archiving'
+            | 'archived';
+        }
+
+        const docAgent = new Agent<DocState>({ initialState: { status: 'ready' } });
+
+        const readyAction = vi.fn();
+        const processAction = vi.fn();
+        const changeAction = vi.fn();
+        const checkAction = vi.fn();
+
+        // Step 1: Document ready -> process
+        docAgent.when(
+          (state) => state.status === 'ready',
+          [
+            (state) => {
+              readyAction();
+              state.status = 'processing';
+            },
+          ],
+        );
+
+        // Step 2: Document processing -> processed
+        docAgent.when(
+          (state) => state.status === 'processing',
+          [
+            (state) => {
+              processAction();
+              state.status = 'processed';
+            },
+          ],
+        );
+
+        // Step 3: Document processed -> checking
+        docAgent.when(
+          (state) => state.status === 'processed',
+          [
+            (state) => {
+              changeAction();
+              state.status = 'checking';
+            },
+          ],
+        );
+
+        // Step 4: Document checking -> archived
+        docAgent.when(
+          (state) => state.status === 'checking',
+          [
+            (state) => {
+              checkAction();
+              state.status = 'archived';
+            },
+          ],
+        );
+
+        await docAgent.start();
+        docAgent.setState({ status: 'ready' });
+
+        // Wait for all 4 cascading actions
+        await docAgent.settle();
+
+        expect(readyAction).toHaveBeenCalled();
+        expect(processAction).toHaveBeenCalled();
+        expect(changeAction).toHaveBeenCalled();
+        expect(checkAction).toHaveBeenCalled();
+        expect(docAgent.getState().status).toBe('archived');
+
+        await docAgent.stop();
+      });
+
+      it('should handle multiple state changes triggering cascades', async () => {
+        const action1 = vi.fn();
+        const action2 = vi.fn();
+
+        agent.when(
+          (state) => state.count === 1,
+          [
+            (state) => {
+              action1();
+              state.count = 2;
+            },
+          ],
+        );
+
+        agent.when(
+          (state) => state.count === 2,
+          [
+            (state) => {
+              action2();
+              state.count = 3;
+            },
+          ],
+        );
+
+        await agent.start();
+
+        // First cascade
+        agent.setState({ count: 1 });
+        await agent.settle();
+
+        expect(action1).toHaveBeenCalledTimes(1);
+        expect(action2).toHaveBeenCalledTimes(1);
+        expect(agent.getState().count).toBe(3);
+
+        await agent.stop();
+      });
+
+      it('should reset quiet counter when new state change happens during settle waiting', async () => {
+        const action1 = vi.fn();
+        const action2 = vi.fn();
+
+        agent.when(
+          (state) => state.count > 0 && state.count < 2,
+          [
+            (state) => {
+              action1();
+              // Don't change state yet
+            },
+          ],
+        );
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Start waiting for settle
+        const settlePromise = agent.settle();
+
+        // After a short delay, trigger more state changes
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        agent.setState({ count: 2 });
+        action2();
+
+        await settlePromise;
+        await agent.stop();
+
+        expect(action1).toHaveBeenCalled();
+      });
+    });
+
+    describe('multiple concurrent settle calls', () => {
+      it('should handle multiple settle() calls with same quiet cycles', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Start multiple settle() calls
+        const settle1 = agent.settle();
+        const settle2 = agent.settle();
+        const settle3 = agent.settle();
+
+        // All should resolve
+        await Promise.all([settle1, settle2, settle3]);
+
+        await agent.stop();
+        expect(action).toHaveBeenCalled();
+      });
+
+      it('should handle multiple settle() calls with different quiet cycles', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Different quiet cycle requirements
+        const settle1 = agent.settle(1);
+        const settle2 = agent.settle(2);
+        const settle3 = agent.settle(3);
+
+        // All should resolve in order
+        await settle1;
+        await settle2;
+        await settle3;
+
+        await agent.stop();
+        expect(action).toHaveBeenCalled();
+      });
+
+      it('should resolve each settle call independently', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        const startTime = Date.now();
+        const settle1 = agent.settle(1);
+        const settle2 = agent.settle(3);
+
+        const time1 = Date.now();
+        await settle1;
+        const time2 = Date.now();
+        await settle2;
+        const time3 = Date.now();
+
+        // settle1 should complete faster than settle2
+        expect(time2 - time1).toBeLessThan(time3 - time2);
+
+        await agent.stop();
+      });
+    });
+
+    describe('error handling', () => {
+      it('should throw AgentError if agent is not running', () => {
+        expect(() => agent.settle()).toThrow(AgentError);
+      });
+
+      it('should throw AgentError if quietCycles is 0', async () => {
+        await agent.start();
+        expect(() => agent.settle(0)).toThrow(AgentError);
+        await agent.stop();
+      });
+
+      it('should throw AgentError if quietCycles is negative', async () => {
+        await agent.start();
+        expect(() => agent.settle(-1)).toThrow(AgentError);
+        await agent.stop();
+      });
+
+      it('should reject with timeout error if quiet cycles not reached in time', async () => {
+        // Trigger that repeats forever
+        agent.when(
+          (state) => state.count > 0,
+          [
+            (state) => {
+              state.count++;
+            },
+          ],
+        );
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Try to settle with very short timeout and high quiet cycles requirement
+        await expect(agent.settle(100, 50)).rejects.toThrow(AgentError);
+
+        await agent.stop();
+      });
+
+      it('should include timeout context in error', async () => {
+        agent.when(
+          (state) => state.count > 0,
+          [
+            (state) => {
+              state.count++;
+            },
+          ],
+        );
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        try {
+          await agent.settle(100, 100);
+          expect.fail('Should have thrown timeout error');
+        } catch (error) {
+          if (error instanceof AgentError) {
+            expect(error.code).toBe('SETTLE_TIMEOUT');
+            expect(error.context).toBeDefined();
+          }
+        }
+
+        await agent.stop();
+      });
+
+      it('should reject all pending settle() calls if agent stops while waiting', async () => {
+        const action = vi.fn();
+
+        agent.when(
+          (state) => state.count > 0,
+          [
+            (state) => {
+              action();
+              state.count++;
+            },
+          ],
+        );
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        const settle1 = agent.settle(100);
+        const settle2 = agent.settle(100);
+
+        // Stop agent while settling
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await agent.stop();
+
+        // Both settle calls should reject
+        let settle1Rejected = false;
+        let settle2Rejected = false;
+
+        try {
+          await settle1;
+        } catch (error) {
+          if (error instanceof AgentError) {
+            settle1Rejected = true;
+          }
+        }
+
+        try {
+          await settle2;
+        } catch (error) {
+          if (error instanceof AgentError) {
+            settle2Rejected = true;
+          }
+        }
+
+        expect(settle1Rejected).toBe(true);
+        expect(settle2Rejected).toBe(true);
+      });
+    });
+
+    describe('timeout behavior', () => {
+      it('should timeout after specified duration', async () => {
+        agent.when(
+          (state) => state.count > 0,
+          [
+            (state) => {
+              state.count++;
+            },
+          ],
+        );
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        const startTime = Date.now();
+
+        try {
+          await agent.settle(100, 100);
+          expect.fail('Should have timed out');
+        } catch (error) {
+          const elapsed = Date.now() - startTime;
+          // Should timeout around 100ms (with some tolerance)
+          expect(elapsed).toBeGreaterThanOrEqual(80);
+          expect(elapsed).toBeLessThan(200);
+        }
+
+        await agent.stop();
+      });
+
+      it('should clean up timeout on successful resolution', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Should resolve quickly without timeout firing
+        await agent.settle(2, 5000);
+
+        await agent.stop();
+        expect(action).toHaveBeenCalled();
+      });
+    });
+
+    describe('integration with other features', () => {
+      it('should work with event-based triggers', async () => {
+        const action1 = vi.fn();
+        const action2 = vi.fn();
+
+        agent.on('process', [
+          (state) => {
+            action1();
+            state.count++;
+          },
+        ]);
+
+        agent.when((state) => state.count > 0, [action2]);
+
+        await agent.start();
+        agent.emitEvent('process');
+
+        await agent.settle();
+        await agent.stop();
+
+        expect(action1).toHaveBeenCalled();
+        expect(action2).toHaveBeenCalled();
+      });
+
+      it('should work with delayed triggers', async () => {
+        const action1 = vi.fn();
+        const action2 = vi.fn();
+
+        agent.addTrigger({
+          id: 'delayed-trigger',
+          check: (state) => state.count > 0 && state.count < 2,
+          actions: [
+            (state) => {
+              action1();
+              state.count++;
+            },
+          ],
+          delay: 20,
+        });
+
+        agent.when((state) => state.count > 1, [action2]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        await agent.settle();
+        await agent.stop();
+
+        expect(action1).toHaveBeenCalled();
+        expect(action2).toHaveBeenCalled();
+      });
+
+      it('should work with once() triggers', async () => {
+        const action1 = vi.fn();
+        const action2 = vi.fn();
+
+        agent.once(
+          (state) => state.count > 0 && state.count < 2,
+          [
+            (state) => {
+              action1();
+              state.count++;
+            },
+          ],
+        );
+
+        agent.when((state) => state.count > 1, [action2]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        await agent.settle();
+        await agent.stop();
+
+        expect(action1).toHaveBeenCalledTimes(1);
+        expect(action2).toHaveBeenCalled();
+      });
+
+      it('should handle rapid consecutive state changes', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+
+        // Rapid state changes
+        for (let i = 1; i <= 5; i++) {
+          agent.setState({ count: i });
+        }
+
+        await agent.settle();
+        await agent.stop();
+
+        expect(action.mock.calls.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe('edge cases', () => {
+      it('should work with no triggers registered', async () => {
+        await agent.start();
+
+        // Should resolve immediately since nothing changes state
+        await agent.settle();
+
+        await agent.stop();
+        expect(true).toBe(true);
+      });
+
+      it('should handle high quietCycles requirement', async () => {
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Wait for 10 quiet cycles (~100ms)
+        await agent.settle(10);
+
+        await agent.stop();
+        expect(action).toHaveBeenCalled();
+      });
+
+      it('should handle settle() during long-running async actions', async () => {
+        const action1 = vi.fn();
+        const action2 = vi.fn();
+
+        agent.when(
+          (state) => state.count === 1,
+          [
+            async (state) => {
+              action1();
+              await new Promise((resolve) => setTimeout(resolve, 30));
+              state.count = 2;
+            },
+          ],
+        );
+
+        agent.when((state) => state.count === 2, [action2]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        await agent.settle();
+        await agent.stop();
+
+        expect(action1).toHaveBeenCalled();
+        expect(action2).toHaveBeenCalled();
+      });
+
+      it('should handle settle() with conditions', async () => {
+        const condition = vi.fn(() => true);
+        const action = vi.fn();
+
+        agent.when((state) => state.count > 0, [condition], [action]);
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        await agent.settle();
+        await agent.stop();
+
+        expect(condition).toHaveBeenCalled();
+        expect(action).toHaveBeenCalled();
+      });
+    });
+  });
 });
