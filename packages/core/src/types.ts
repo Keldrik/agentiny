@@ -43,6 +43,12 @@ export interface AgentConfig<TState = unknown> {
    * Error handler callback
    */
   onError?: (error: Error) => void;
+  /**
+   * Idle timeout in milliseconds between trigger checks when no settle() is pending.
+   * Lower values = more responsive but higher CPU usage.
+   * @default 100
+   */
+  idleTimeout?: number;
 }
 
 /**

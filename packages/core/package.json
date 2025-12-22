@@ -4,7 +4,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Lightweight TypeScript agent framework - core package",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -39,9 +39,9 @@
   "author": "Thomas Wiegold",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^24.8.1",
-    "@vitest/ui": "^3.2.4",
+    "@types/node": "^25.0.3",
+    "@vitest/ui": "^4.0.16",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.0.16"
   }
 }

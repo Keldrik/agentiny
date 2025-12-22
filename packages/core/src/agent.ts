@@ -76,6 +76,8 @@ export class Agent<TState = unknown> {
   private _triggerIdCounter = 0;
   private _consecutiveQuietCycles = 0;
   private _settleResolvers: SettleResolver[] = [];
+  private _wakeResolve: (() => void) | null = null;
+  private _idleTimeout: number;
 
   /**
    * Create a new Agent instance
@@ -88,10 +90,12 @@ export class Agent<TState = unknown> {
     this._triggers = new Map();
     this._status = AgentStatusEnum.Idle;
     this._onError = config.onError;
+    this._idleTimeout = config.idleTimeout ?? 100;
 
     // Subscribe to state changes to trigger re-evaluation of triggers
     this._state.subscribe(() => {
       this._stateChanged = true;
+      this._wake();
     });
 
     if (config.triggers) {
@@ -292,6 +296,9 @@ export class Agent<TState = unknown> {
       this._status = AgentStatusEnum.Stopped;
       this._shouldRun = false;
 
+      // Wake the execution loop so it can exit immediately
+      this._wake();
+
       // Reject all pending settle promises
       const settleError = new AgentError('Agent stopped while waiting to settle', 'AGENT_STOPPED', {
         pendingSettles: this._settleResolvers.length,
@@ -369,6 +376,9 @@ export class Agent<TState = unknown> {
       return Promise.resolve();
     }
 
+    // Wake the loop to switch from idle timeout to faster settle polling
+    this._wake();
+
     return new Promise<void>((resolve, reject) => {
       const resolver: SettleResolver = {
         quietCycles,
@@ -413,6 +423,55 @@ export class Agent<TState = unknown> {
   }
 
   /**
+   * Wake the execution loop to process pending changes immediately.
+   *
+   * Called when state changes or events are emitted to trigger immediate
+   * evaluation instead of waiting for the next timeout.
+   */
+  private _wake(): void {
+    if (this._wakeResolve) {
+      const resolve = this._wakeResolve;
+      this._wakeResolve = null;
+      resolve();
+    }
+  }
+
+  /**
+   * Wait for the next evaluation cycle.
+   *
+   * Returns immediately if there are pending changes. Otherwise waits for
+   * either a wake signal (from setState/emitEvent) or a timeout.
+   *
+   * Uses a short 10ms timeout when settle() is pending to maintain quiet cycle
+   * tracking. Uses the configurable idleTimeout otherwise to save CPU.
+   */
+  private _waitForNextCycle(): Promise<void> {
+    // If already have pending changes, don't wait
+    if (this._stateChanged) {
+      return Promise.resolve();
+    }
+
+    const pollInterval = 10; // milliseconds for settle() quiet cycle tracking
+    const hasSettleWaiters = this._settleResolvers.length > 0;
+
+    // Create wake promise
+    const wakePromise = new Promise<void>((resolve) => {
+      this._wakeResolve = resolve;
+    });
+
+    // Determine timeout based on whether settle() is waiting
+    // Short timeout (10ms) when settle needs quiet cycle tracking
+    // Configurable idle timeout when no settle is pending
+    const timeout = hasSettleWaiters ? pollInterval : this._idleTimeout;
+
+    const timeoutPromise = new Promise<void>((resolve) => {
+      setTimeout(resolve, timeout);
+    });
+
+    return Promise.race([wakePromise, timeoutPromise]);
+  }
+
+  /**
    * Internal execution loop that continuously checks and executes triggers.
    *
    * This method runs while the agent is running (_shouldRun is true). It:
@@ -426,16 +485,14 @@ export class Agent<TState = unknown> {
    * 8. Collects and reports any errors
    *
    * Performance Optimization:
-   * - Only evaluates triggers when state changes, not on every poll cycle
-   * - Reduces CPU usage for agents with many triggers (100+)
-   * - Uses a subscription to the internal state to track changes
-   * - Maintains a 10ms polling interval as a fallback for edge cases
+   * - Uses event-driven wake mechanism for immediate response to state changes
+   * - Only evaluates triggers when state changes, not on every cycle
+   * - Uses configurable idleTimeout when no settle() is pending
+   * - Maintains 10ms polling when settle() is waiting for quiet cycles
    *
    * @returns Promise that resolves when the loop exits
    */
   private async _runExecutionLoop(): Promise<void> {
-    const pollInterval = 10; // milliseconds between trigger checks
-
     while (this._shouldRun) {
       try {
         // Track if state changed at the start of this cycle
@@ -465,10 +522,8 @@ export class Agent<TState = unknown> {
           this._checkSettleResolvers();
         }
 
-        // Small delay to prevent busy-waiting
-        await new Promise((resolve) => {
-          setTimeout(resolve, pollInterval);
-        });
+        // Wait for next event or timeout (event-driven instead of fixed polling)
+        await this._waitForNextCycle();
       } catch (error) {
         // Log error but continue the loop
         if (error instanceof Error && this._onError) {
@@ -574,6 +629,7 @@ export class Agent<TState = unknown> {
     this._eventEmissionCount.set(event, currentCount + 1);
     // Signal that triggers should be evaluated for this event emission
     this._stateChanged = true;
+    this._wake();
   }
 
   /**

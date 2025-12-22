@@ -251,10 +251,18 @@ interface AgentConfig<TState> {
   initialState?: TState;
   triggers?: Trigger<TState>[];
   onError?: (error: Error) => void;
+  idleTimeout?: number;
 }
 ```
 
 Configuration for creating an agent.
+
+**Options:**
+
+- `initialState` - Initial state object
+- `triggers` - Initial triggers to register
+- `onError` - Error handler callback
+- `idleTimeout` - Idle timeout in milliseconds between trigger checks when no `settle()` is pending (default: 100ms). Lower values = more responsive but higher CPU usage.
 
 #### AgentStatus
 
@@ -308,12 +316,14 @@ settle(quietCycles = 2, timeout = 10000): Promise<void>
 ```
 
 **Parameters:**
+
 - `quietCycles` (optional, default: 2) - Number of consecutive polling cycles with no state changes required before settling (each cycle is ~10ms, so default is ~20ms)
 - `timeout` (optional, default: 10000) - Maximum time to wait in milliseconds before rejecting with a timeout error
 
 **Returns:** Promise that resolves when the agent is quiet, or rejects on timeout/error
 
 **Throws:**
+
 - `AgentError` with code `'AGENT_NOT_RUNNING'` if agent is not running
 - `AgentError` with code `'INVALID_ARGUMENT'` if quietCycles <= 0
 - `AgentError` with code `'SETTLE_TIMEOUT'` if timeout is exceeded
@@ -326,9 +336,14 @@ settle(quietCycles = 2, timeout = 10000): Promise<void>
 ```typescript
 const agent = new Agent({ initialState: { count: 1 } });
 
-agent.when((state) => state.count < 3, [
-  (state) => { state.count++; }
-]);
+agent.when(
+  (state) => state.count < 3,
+  [
+    (state) => {
+      state.count++;
+    },
+  ],
+);
 
 await agent.start();
 agent.setState({ count: 1 });
@@ -348,23 +363,41 @@ interface WorkflowState {
 }
 
 const agent = new Agent<WorkflowState>({
-  initialState: { stage: 'init' }
+  initialState: { stage: 'init' },
 });
 
 // Stage 1: init → processing
-agent.when((state) => state.stage === 'init', [
-  (state) => { state.stage = 'processing'; console.log('Processing...'); }
-]);
+agent.when(
+  (state) => state.stage === 'init',
+  [
+    (state) => {
+      state.stage = 'processing';
+      console.log('Processing...');
+    },
+  ],
+);
 
 // Stage 2: processing → validating
-agent.when((state) => state.stage === 'processing', [
-  (state) => { state.stage = 'validating'; console.log('Validating...'); }
-]);
+agent.when(
+  (state) => state.stage === 'processing',
+  [
+    (state) => {
+      state.stage = 'validating';
+      console.log('Validating...');
+    },
+  ],
+);
 
 // Stage 3: validating → complete
-agent.when((state) => state.stage === 'validating', [
-  (state) => { state.stage = 'complete'; console.log('Complete!'); }
-]);
+agent.when(
+  (state) => state.stage === 'validating',
+  [
+    (state) => {
+      state.stage = 'complete';
+      console.log('Complete!');
+    },
+  ],
+);
 
 await agent.start();
 agent.setState({ stage: 'init' });
@@ -518,28 +551,37 @@ const agent = new Agent<ProcessingState>({
 });
 
 // Input → Processing
-agent.when((state) => state.stage === 'input' && state.data.length > 0, [
-  (state) => {
-    console.log('Processing data...');
-    state.stage = 'processing';
-  },
-]);
+agent.when(
+  (state) => state.stage === 'input' && state.data.length > 0,
+  [
+    (state) => {
+      console.log('Processing data...');
+      state.stage = 'processing';
+    },
+  ],
+);
 
 // Processing → Validating
-agent.when((state) => state.stage === 'processing', [
-  (state) => {
-    console.log('Validating data...');
-    state.stage = 'validating';
-  },
-]);
+agent.when(
+  (state) => state.stage === 'processing',
+  [
+    (state) => {
+      console.log('Validating data...');
+      state.stage = 'validating';
+    },
+  ],
+);
 
 // Validating → Output
-agent.when((state) => state.stage === 'validating', [
-  (state) => {
-    console.log('Data ready!');
-    state.stage = 'output';
-  },
-]);
+agent.when(
+  (state) => state.stage === 'validating',
+  [
+    (state) => {
+      console.log('Data ready!');
+      state.stage = 'output';
+    },
+  ],
+);
 
 await agent.start();
 agent.setState({ stage: 'input', data: 'important data' });
@@ -555,15 +597,43 @@ await agent.stop();
 
 @agentiny/core is built with performance in mind:
 
+### Event-Driven Trigger Evaluation
+
+The agent uses an event-driven architecture for optimal performance. Triggers are evaluated **immediately** when:
+
+- State changes via `setState()` - triggers evaluated instantly
+- Events are emitted via `emitEvent()` - triggers evaluated instantly
+- `settle()` is called - switches to fast 10ms polling for quiet cycle detection
+
+When the agent is idle (no state changes or events), it uses a configurable idle timeout (default: 100ms) instead of continuous polling. This dramatically reduces CPU usage for idle agents.
+
+### Configuring Idle Timeout
+
+You can tune the idle timeout based on your use case:
+
+```typescript
+// Low latency application - check more frequently when idle
+const agent = new Agent({
+  initialState: {},
+  idleTimeout: 50, // 50ms between checks when idle
+});
+
+// Background processing - save CPU with longer idle timeout
+const agent = new Agent({
+  initialState: {},
+  idleTimeout: 500, // 500ms between checks when idle
+});
+```
+
+**Note:** The `idleTimeout` only affects idle periods. State changes and events always trigger immediate evaluation, regardless of this setting.
+
 ### Smart State Change Tracking
 
-The agent uses intelligent state change detection to minimize unnecessary trigger evaluations. Triggers are only checked when:
+Triggers are only checked when state actually changes, not on every cycle. This means:
 
-- State actually changes (via `setState()`)
-- An event is emitted (via `emitEvent()`)
-- The agent starts
-
-This means idle agents with stable state consume minimal CPU resources.
+- Idle agents consume minimal CPU (configurable via `idleTimeout`)
+- State changes trigger immediate evaluation (0ms latency)
+- The `settle()` function uses fast 10ms polling for accurate quiet cycle detection
 
 ### Memory Efficiency
 
@@ -573,7 +643,7 @@ This means idle agents with stable state consume minimal CPU resources.
 
 ### Scalability
 
-Tested with 100+ triggers with no performance degradation. The polling architecture ensures consistent behavior regardless of trigger count.
+Tested with 100+ triggers with no performance degradation. The event-driven architecture ensures consistent behavior regardless of trigger count.
 
 ## Testing
 
@@ -705,7 +775,8 @@ console.log('All cascading actions complete!');
 
 - **Lightweight**: Less than 5KB minified + gzipped
 - **No dependencies**: Pure TypeScript with zero runtime dependencies
-- **Efficient**: Smart state change tracking eliminates unnecessary evaluations
+- **Event-driven**: Immediate trigger evaluation on state changes (0ms latency)
+- **CPU-efficient**: Configurable idle timeout reduces CPU usage when idle
 - **Memory-safe**: Proper cleanup of triggers and subscriptions
 - **Scalable**: Handles 100+ triggers efficiently
 

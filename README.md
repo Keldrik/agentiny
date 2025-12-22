@@ -169,13 +169,13 @@ Functions that **do something** when triggered:
 
 ✅ **Zero Dependencies** - Minimal footprint, no runtime dependencies
 ✅ **Type-Safe** - Full TypeScript support with strict mode
-✅ **Event-Driven** - Reactive trigger system with state management
+✅ **Event-Driven** - Immediate trigger evaluation on state changes (0ms latency)
 ✅ **Flexible** - Repeating triggers, one-time triggers, event-based triggers
 ✅ **Async/Await** - Full async support for all operations
 ✅ **Small Bundle** - Less than 5KB minified + gzipped
 ✅ **Well-Tested** - 152+ comprehensive tests
-✅ **Performance** - Smart state change tracking for efficiency
-✅ **Cascading Support** - Wait for all cascading actions to complete
+✅ **CPU-Efficient** - Configurable idle timeout reduces CPU usage when idle
+✅ **Cascading Support** - Wait for all cascading actions to complete with `settle()`
 
 ## Development
 
@@ -299,19 +299,34 @@ interface DocumentState {
 const agent = new Agent<DocumentState>({ initialState: { status: 'ready' } });
 
 // Step 1: Ready → Processing
-agent.when((state) => state.status === 'ready', [
-  (state) => { state.status = 'processing'; }
-]);
+agent.when(
+  (state) => state.status === 'ready',
+  [
+    (state) => {
+      state.status = 'processing';
+    },
+  ],
+);
 
 // Step 2: Processing → Processed
-agent.when((state) => state.status === 'processing', [
-  (state) => { state.status = 'processed'; }
-]);
+agent.when(
+  (state) => state.status === 'processing',
+  [
+    (state) => {
+      state.status = 'processed';
+    },
+  ],
+);
 
 // Step 3: Processed → Archived
-agent.when((state) => state.status === 'processed', [
-  (state) => { state.status = 'archived'; }
-]);
+agent.when(
+  (state) => state.status === 'processed',
+  [
+    (state) => {
+      state.status = 'archived';
+    },
+  ],
+);
 
 await agent.start();
 agent.setState({ status: 'ready' });
@@ -320,6 +335,28 @@ agent.setState({ status: 'ready' });
 await agent.settle();
 console.log(agent.getState()); // { status: 'archived' }
 ```
+
+### Configuring Idle Timeout
+
+Tune CPU usage vs responsiveness for your use case:
+
+```typescript
+import { Agent } from '@agentiny/core';
+
+// Low latency - check more frequently when idle
+const agent = new Agent({
+  initialState: {},
+  idleTimeout: 50, // 50ms between checks when idle
+});
+
+// Background processing - save CPU
+const agent = new Agent({
+  initialState: {},
+  idleTimeout: 500, // 500ms between checks when idle (default: 100ms)
+});
+```
+
+Note: State changes and events always trigger immediate evaluation regardless of `idleTimeout`.
 
 ## Performance Metrics
 
@@ -331,21 +368,23 @@ console.log(agent.getState()); // { status: 'archived' }
 
 ## Architecture
 
-agentiny uses a **trigger-condition-action** architecture:
+agentiny uses an **event-driven trigger-condition-action** architecture:
 
 ```
-State Change
+State Change / Event Emission
     ↓
-Check Trigger
+Immediate Wake (0ms latency)
+    ↓
+Check Triggers
     ↓
 Evaluate Conditions
     ↓
 Execute Actions
     ↓
-Update State
+Update State (may cascade)
 ```
 
-This creates a reactive system where agents automatically respond to state changes or events.
+This creates a reactive system where agents automatically respond to state changes or events with immediate trigger evaluation. When idle, the agent uses a configurable timeout (default: 100ms) to minimize CPU usage.
 
 ## Browser Support
 
