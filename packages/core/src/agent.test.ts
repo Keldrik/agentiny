@@ -31,6 +31,23 @@ describe('Agent', () => {
     it('should not be running initially', () => {
       expect(agent.isRunning()).toBe(false);
     });
+
+    it('should use custom logger from config', () => {
+      const customLogger = vi.fn();
+      const loggedAgent = new Agent({
+        initialState: { count: 0 },
+        logger: customLogger,
+      });
+
+      const unsubscribe = loggedAgent.subscribe(() => {
+        throw new Error('test error');
+      });
+
+      loggedAgent.setState({ count: 1 });
+
+      expect(customLogger).toHaveBeenCalled();
+      unsubscribe();
+    });
   });
 
   describe('state management', () => {
@@ -176,6 +193,19 @@ describe('Agent', () => {
       agent.clearTriggers();
       expect(agent.getAllTriggers()).toHaveLength(0);
     });
+
+    it('should clear event tracking maps when clearing triggers', () => {
+      agent.on('event1', [() => {}]);
+      agent.on('event2', [() => {}]);
+
+      expect(agent.getEventTriggers().size).toBe(2);
+
+      agent.clearTriggers();
+
+      expect(agent.getEventTriggers().size).toBe(0);
+      expect(agent.getEventTriggersForEvent('event1')).toEqual([]);
+      expect(agent.getEventTriggersForEvent('event2')).toEqual([]);
+    });
   });
 
   describe('agent lifecycle', () => {
@@ -201,6 +231,27 @@ describe('Agent', () => {
 
     it('should throw error when stopping non-running agent', async () => {
       await expect(agent.stop()).rejects.toThrow(AgentError);
+    });
+
+    it('should reset trigger ID counter on start', async () => {
+      const testAgent = new Agent<{ count: number }>();
+      const id1 = testAgent.when(() => true, [() => {}]);
+      const id2 = testAgent.when(() => true, [() => {}]);
+
+      const firstCounter = parseInt(id1.replace('__trigger_', ''), 10);
+      const secondCounter = parseInt(id2.replace('__trigger_', ''), 10);
+
+      expect(secondCounter).toBe(firstCounter + 1);
+
+      testAgent.clearTriggers();
+
+      await testAgent.start();
+      await testAgent.stop();
+
+      const newId = testAgent.when(() => true, [() => {}]);
+      const newCounter = parseInt(newId.replace('__trigger_', ''), 10);
+
+      expect(newCounter).toBe(1);
     });
   });
 
@@ -750,13 +801,12 @@ describe('Agent', () => {
       await agent.start();
       agent.setState({ count: 1 });
 
-      // Note: Condition errors are caught but not passed to onError callback
-      // They are logged but trigger continues without executing actions
       await new Promise((resolve) => setTimeout(resolve, 30));
       await agent.stop();
 
-      // Condition errors don't trigger onError - they just prevent action execution
-      // This is by design as documented in conditions.ts
+      expect(onError).toHaveBeenCalled();
+      const error = onError.mock.calls[0][0];
+      expect(error.message).toBe('Condition failed');
     });
 
     it('should continue executing despite action errors', async () => {
@@ -1168,7 +1218,7 @@ describe('Agent', () => {
         agent.when(
           (state) => state.count > 0 && state.count < 2,
           [
-            (state) => {
+            () => {
               action1();
               // Don't change state yet
             },
@@ -1244,7 +1294,6 @@ describe('Agent', () => {
         await agent.start();
         agent.setState({ count: 1 });
 
-        const startTime = Date.now();
         const settle1 = agent.settle(1);
         const settle2 = agent.settle(3);
 
@@ -1391,7 +1440,7 @@ describe('Agent', () => {
         try {
           await agent.settle(100, 100);
           expect.fail('Should have timed out');
-        } catch (error) {
+        } catch {
           const elapsed = Date.now() - startTime;
           // Should timeout around 100ms (with some tolerance)
           expect(elapsed).toBeGreaterThanOrEqual(80);

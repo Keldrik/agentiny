@@ -26,6 +26,13 @@ export type ConditionFn<TState = unknown> = (state: TState) => boolean | Promise
 export type ActionFn<TState = unknown> = (state: TState) => void | Promise<void>;
 
 /**
+ * Logger function type for error reporting
+ *
+ * @param error - The error to log
+ */
+export type LoggerFn = (error: unknown) => void;
+
+/**
  * Configuration for creating an Agent
  *
  * @template TState - The type of the agent's state
@@ -49,6 +56,11 @@ export interface AgentConfig<TState = unknown> {
    * @default 100
    */
   idleTimeout?: number;
+  /**
+   * Custom logger for state subscriber errors
+   * @default console.error
+   */
+  logger?: LoggerFn;
 }
 
 /**

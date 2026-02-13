@@ -1,5 +1,10 @@
 import type { ConditionFn } from './types';
 
+export interface ConditionResult {
+  passed: boolean;
+  errors: readonly Error[];
+}
+
 /**
  * Evaluates an array of condition functions against the provided state.
  *
@@ -53,29 +58,23 @@ import type { ConditionFn } from './types';
 export async function evaluateConditions<TState>(
   conditions: readonly ConditionFn<TState>[],
   state: TState,
-): Promise<boolean> {
-  // Empty conditions array returns true
+): Promise<ConditionResult> {
   if (conditions.length === 0) {
-    return true;
+    return { passed: true, errors: [] };
   }
 
-  // Evaluate conditions sequentially with short-circuit
   for (const condition of conditions) {
     try {
-      // Await the result to handle both sync and async conditions
-
       const result = await Promise.resolve(condition(state));
 
-      // Short-circuit on first false
       if (!result) {
-        return false;
+        return { passed: false, errors: [] };
       }
-    } catch {
-      // Return false on any error and stop evaluation
-      return false;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      return { passed: false, errors: [err] };
     }
   }
 
-  // All conditions passed
-  return true;
+  return { passed: true, errors: [] };
 }

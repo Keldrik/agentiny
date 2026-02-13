@@ -5,7 +5,8 @@ describe('evaluateConditions', () => {
   describe('basic evaluation', () => {
     it('should return true for empty conditions', async () => {
       const result = await evaluateConditions([], {});
-      expect(result).toBe(true);
+      expect(result.passed).toBe(true);
+      expect(result.errors).toEqual([]);
     });
 
     it('should return true when all conditions pass', async () => {
@@ -15,7 +16,8 @@ describe('evaluateConditions', () => {
       ];
 
       const result = await evaluateConditions(conditions, { count: 5 });
-      expect(result).toBe(true);
+      expect(result.passed).toBe(true);
+      expect(result.errors).toEqual([]);
     });
 
     it('should return false when one condition fails', async () => {
@@ -25,7 +27,7 @@ describe('evaluateConditions', () => {
       ];
 
       const result = await evaluateConditions(conditions, { count: 15 });
-      expect(result).toBe(false);
+      expect(result.passed).toBe(false);
     });
 
     it('should return false when first condition fails', async () => {
@@ -35,7 +37,7 @@ describe('evaluateConditions', () => {
       ];
 
       const result = await evaluateConditions(conditions, { count: 5 });
-      expect(result).toBe(false);
+      expect(result.passed).toBe(false);
     });
   });
 
@@ -75,7 +77,7 @@ describe('evaluateConditions', () => {
       ];
 
       const result = await evaluateConditions(conditions, { count: 5 });
-      expect(result).toBe(true);
+      expect(result.passed).toBe(true);
     });
 
     it('should handle mixed sync and async conditions', async () => {
@@ -88,7 +90,7 @@ describe('evaluateConditions', () => {
       ];
 
       const result = await evaluateConditions(conditions, { count: 50 });
-      expect(result).toBe(true);
+      expect(result.passed).toBe(true);
     });
 
     it('should short-circuit on async condition failure', async () => {
@@ -102,7 +104,7 @@ describe('evaluateConditions', () => {
 
       const result = await evaluateConditions(conditions, { count: 5 });
 
-      expect(result).toBe(false);
+      expect(result.passed).toBe(false);
       expect(condition1).toHaveBeenCalled();
       expect(condition2).not.toHaveBeenCalled();
     });
@@ -117,7 +119,9 @@ describe('evaluateConditions', () => {
       ];
 
       const result = await evaluateConditions(conditions, {});
-      expect(result).toBe(false);
+      expect(result.passed).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toBe('Condition error');
     });
 
     it('should short-circuit on error', async () => {
@@ -130,7 +134,9 @@ describe('evaluateConditions', () => {
 
       const result = await evaluateConditions(conditions, {});
 
-      expect(result).toBe(false);
+      expect(result.passed).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toBe('First condition error');
       expect(condition1).toHaveBeenCalled();
       expect(condition2).not.toHaveBeenCalled();
     });
@@ -144,7 +150,9 @@ describe('evaluateConditions', () => {
       ];
 
       const result = await evaluateConditions(conditions, {});
-      expect(result).toBe(false);
+      expect(result.passed).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toBe('Async error');
     });
   });
 
@@ -168,21 +176,21 @@ describe('evaluateConditions', () => {
       const conditions = [(state: { count: number }) => state.count > 5];
 
       const result = await evaluateConditions(conditions, { count: 10 });
-      expect(result).toBe(true);
+      expect(result.passed).toBe(true);
     });
 
     it('should handle many conditions', async () => {
       const conditions = Array.from({ length: 10 }, () => () => true);
 
       const result = await evaluateConditions(conditions, {});
-      expect(result).toBe(true);
+      expect(result.passed).toBe(true);
     });
 
     it('should handle readonly array', async () => {
       const conditions: readonly ((state: object) => boolean)[] = [() => true, () => true];
 
       const result = await evaluateConditions(conditions, {});
-      expect(result).toBe(true);
+      expect(result.passed).toBe(true);
     });
   });
 });

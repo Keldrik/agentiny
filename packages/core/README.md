@@ -25,7 +25,7 @@
 - **Cascading Action Support** - Wait for all cascading trigger-action flows to complete with `settle()`
 - **Small Bundle Size** - Less than 5KB minified + gzipped
 - **Performance Optimized** - Smart state change tracking minimizes unnecessary evaluations
-- **Well-Tested** - 152+ comprehensive tests with vitest
+- **Well-Tested** - 155 comprehensive tests with vitest
 
 ## Quick Navigation
 
@@ -152,6 +152,7 @@ new Agent<TState>(config?: AgentConfig<TState>)
 - `initialState?: TState` - Initial state object
 - `triggers?: Trigger<TState>[]` - Initial triggers to register
 - `onError?: (error: Error) => void` - Error handler callback
+- `logger?: LoggerFn` - Custom logger for state subscriber errors
 
 #### Methods
 
@@ -229,6 +230,14 @@ type ActionFn<TState> = (state: TState) => void | Promise<void>;
 
 Function that performs an action.
 
+#### LoggerFn
+
+```typescript
+type LoggerFn = (error: unknown) => void;
+```
+
+Function for logging errors (e.g., from state subscriber errors).
+
 #### Trigger
 
 ```typescript
@@ -252,6 +261,7 @@ interface AgentConfig<TState> {
   triggers?: Trigger<TState>[];
   onError?: (error: Error) => void;
   idleTimeout?: number;
+  logger?: LoggerFn;
 }
 ```
 
@@ -263,6 +273,7 @@ Configuration for creating an agent.
 - `triggers` - Initial triggers to register
 - `onError` - Error handler callback
 - `idleTimeout` - Idle timeout in milliseconds between trigger checks when no `settle()` is pending (default: 100ms). Lower values = more responsive but higher CPU usage.
+- `logger` - Custom logger for state subscriber errors (default: `console.error`)
 
 #### AgentStatus
 
@@ -647,7 +658,7 @@ Tested with 100+ triggers with no performance degradation. The event-driven arch
 
 ## Testing
 
-The package includes 152+ comprehensive tests covering:
+The package includes 155 comprehensive tests covering:
 
 - All agent lifecycle methods
 - State management and subscriptions

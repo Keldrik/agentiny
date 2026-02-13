@@ -86,7 +86,7 @@ export class Agent<TState = unknown> {
    */
   constructor(config: AgentConfig<TState> = {}) {
     const initialState = config.initialState as TState;
-    this._state = new State<TState>(initialState);
+    this._state = new State<TState>(initialState, config.logger);
     this._triggers = new Map();
     this._status = AgentStatusEnum.Idle;
     this._onError = config.onError;
@@ -147,24 +147,29 @@ export class Agent<TState = unknown> {
    * ID will throw an AgentError.
    *
    * @param trigger - Trigger configuration
+   * @returns The trigger ID (useful for removing the trigger later)
    * @throws {AgentError} If a trigger with the same ID already exists
    *
    * @example
    * ```typescript
-   * agent.addTrigger({
+   * const triggerId = agent.addTrigger({
    *   id: 'counter-trigger',
    *   check: (state) => state.count > 10,
    *   actions: [(state) => { state.count = 0; }]
    * });
+   *
+   * // Later: remove the trigger
+   * agent.removeTrigger(triggerId);
    * ```
    */
-  addTrigger(trigger: Trigger<TState>): void {
+  addTrigger(trigger: Trigger<TState>): string {
     if (this._triggers.has(trigger.id)) {
       throw new AgentError(`Trigger with id "${trigger.id}" already exists`, 'DUPLICATE_TRIGGER', {
         triggerId: trigger.id,
       });
     }
     this._triggers.set(trigger.id, trigger);
+    return trigger.id;
   }
 
   /**
@@ -228,6 +233,8 @@ export class Agent<TState = unknown> {
    */
   clearTriggers(): void {
     this._triggers.clear();
+    this._eventTriggers.clear();
+    this._eventLastSeenByTrigger.clear();
   }
 
   /**
@@ -256,6 +263,7 @@ export class Agent<TState = unknown> {
       this._status = AgentStatusEnum.Running;
       this._shouldRun = true;
       this._stateChanged = true; // Evaluate triggers immediately on start
+      this._triggerIdCounter = 0;
       this._consecutiveQuietCycles = 0; // Reset quiet cycle counter
       this._eventEmissionCount.clear();
       this._eventLastSeenByTrigger.clear();
@@ -559,9 +567,16 @@ export class Agent<TState = unknown> {
 
       // Evaluate conditions (if any)
       const conditions = trigger.conditions ?? [];
-      const conditionsPass = await evaluateConditions(conditions, state);
+      const conditionResult = await evaluateConditions(conditions, state);
 
-      if (!conditionsPass) {
+      // Report any errors from condition evaluation
+      if (conditionResult.errors.length > 0 && this._onError) {
+        for (const error of conditionResult.errors) {
+          this._onError(error);
+        }
+      }
+
+      if (!conditionResult.passed) {
         return; // Conditions failed, don't execute actions
       }
 

@@ -1,3 +1,5 @@
+import type { LoggerFn } from './types';
+
 /**
  * Minimal reactive state container
  *
@@ -6,15 +8,23 @@
 export class State<T> {
   private _value: T;
   private _subscribers: Set<(value: T) => void>;
+  private _logger: LoggerFn;
 
   /**
    * Create a new State instance
    *
    * @param initialValue - The initial state value
+   * @param logger - Optional custom logger for subscriber errors
    */
-  constructor(initialValue: T) {
+  constructor(initialValue: T, logger?: LoggerFn) {
     this._value = initialValue;
     this._subscribers = new Set();
+    this._logger =
+      logger ??
+      ((error) => {
+        // eslint-disable-next-line no-undef
+        console.error('Error in state subscriber:', error);
+      });
   }
 
   /**
@@ -59,9 +69,7 @@ export class State<T> {
       try {
         cb(this._value);
       } catch (error) {
-        // Log error but continue notifying other subscribers
-        // eslint-disable-next-line no-undef
-        console.error('Error in state subscriber:', error);
+        this._logger(error);
       }
     });
   }

@@ -173,7 +173,7 @@ Functions that **do something** when triggered:
 ✅ **Flexible** - Repeating triggers, one-time triggers, event-based triggers
 ✅ **Async/Await** - Full async support for all operations
 ✅ **Small Bundle** - Less than 5KB minified + gzipped
-✅ **Well-Tested** - 152+ comprehensive tests
+✅ **Well-Tested** - 155 comprehensive tests
 ✅ **CPU-Efficient** - Configurable idle timeout reduces CPU usage when idle
 ✅ **Cascading Support** - Wait for all cascading actions to complete with `settle()`
 
@@ -364,7 +364,7 @@ Note: State changes and events always trigger immediate evaluation regardless of
 - **Dependencies**: 0 runtime dependencies
 - **Type Safety**: Full TypeScript strict mode
 - **Scalability**: Tested with 100+ concurrent triggers
-- **Test Coverage**: 124+ tests across all packages
+- **Test Coverage**: 155+ tests across all packages
 
 ## Architecture
 
