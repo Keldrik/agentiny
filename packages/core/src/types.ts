@@ -94,6 +94,18 @@ export interface Trigger<TState = unknown> {
    * Delay in milliseconds before executing actions
    */
   delay?: number;
+  /**
+   * Maximum number of times this trigger may fire before being automatically removed.
+   * When both maxFires and repeat: false are set, the trigger is removed after the first fire.
+   * @example maxFires: 3 — fires at most 3 times, then is auto-removed
+   */
+  maxFires?: number;
+  /**
+   * Evaluation priority. Higher values are evaluated first within each pass.
+   * Triggers with equal priority retain their insertion order (stable sort).
+   * @default 0
+   */
+  priority?: number;
 }
 
 /**
@@ -102,6 +114,7 @@ export interface Trigger<TState = unknown> {
  * Represents the current state of an agent's execution:
  * - 'idle': Agent is initialized but not running
  * - 'running': Agent is actively monitoring triggers and executing actions
+ * - 'paused': Agent execution is temporarily suspended; triggers are not evaluated
  * - 'stopped': Agent has been stopped and will not process triggers
  */
 export enum AgentStatus {
@@ -113,6 +126,10 @@ export enum AgentStatus {
    * Agent is actively running and monitoring triggers
    */
   Running = 'running',
+  /**
+   * Agent execution is temporarily suspended
+   */
+  Paused = 'paused',
   /**
    * Agent has been stopped
    */

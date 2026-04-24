@@ -78,6 +78,10 @@ export class Agent<TState = unknown> {
   private _settleResolvers: SettleResolver[] = [];
   private _wakeResolve: (() => void) | null = null;
   private _idleTimeout: number;
+  private _initialState: TState | undefined;
+  private _disabledTriggers: Set<string> = new Set<string>();
+  private _triggerFireCount: Map<string, number> = new Map<string, number>();
+  private _sortedTriggersCache: Trigger<TState>[] | null = null;
 
   /**
    * Create a new Agent instance
@@ -91,6 +95,7 @@ export class Agent<TState = unknown> {
     this._status = AgentStatusEnum.Idle;
     this._onError = config.onError;
     this._idleTimeout = config.idleTimeout ?? 100;
+    this._initialState = config.initialState;
 
     // Subscribe to state changes to trigger re-evaluation of triggers
     this._state.subscribe(() => {
@@ -119,6 +124,19 @@ export class Agent<TState = unknown> {
    */
   setState(newState: TState): void {
     this._state.set(newState);
+  }
+
+  /**
+   * Merge a partial update into the current state.
+   *
+   * Convenience wrapper for object state types. Equivalent to calling
+   * `setState({ ...getState(), ...partial })`. Only meaningful when TState is a
+   * plain object type — for primitive or array state, use setState() directly.
+   *
+   * @param partial - Partial state to merge into current state
+   */
+  updateState(partial: Partial<TState>): void {
+    this.setState({ ...this.getState(), ...partial });
   }
 
   /**
@@ -168,7 +186,17 @@ export class Agent<TState = unknown> {
         triggerId: trigger.id,
       });
     }
+    if (
+      trigger.maxFires !== undefined &&
+      (!Number.isInteger(trigger.maxFires) || trigger.maxFires <= 0)
+    ) {
+      throw new AgentError('maxFires must be a positive integer', 'INVALID_ARGUMENT', {
+        triggerId: trigger.id,
+        maxFires: trigger.maxFires,
+      });
+    }
     this._triggers.set(trigger.id, trigger);
+    this._invalidateSortedTriggers();
     return trigger.id;
   }
 
@@ -209,6 +237,9 @@ export class Agent<TState = unknown> {
       });
     }
     this._triggers.delete(id);
+    this._disabledTriggers.delete(id);
+    this._triggerFireCount.delete(id);
+    this._invalidateSortedTriggers();
 
     // Clean up from event tracking maps
     this._eventLastSeenByTrigger.forEach((triggerMap) => {
@@ -235,6 +266,91 @@ export class Agent<TState = unknown> {
     this._triggers.clear();
     this._eventTriggers.clear();
     this._eventLastSeenByTrigger.clear();
+    this._disabledTriggers.clear();
+    this._triggerFireCount.clear();
+    this._invalidateSortedTriggers();
+  }
+
+  /**
+   * Temporarily disable a trigger without removing it.
+   *
+   * Disabled triggers are skipped during evaluation but remain registered.
+   * Re-enable with enableTrigger().
+   *
+   * @param id - Trigger ID
+   * @throws {AgentError} If no trigger with the given ID exists
+   *
+   * @example
+   * ```typescript
+   * agent.disableTrigger('my-trigger');
+   * // Later:
+   * agent.enableTrigger('my-trigger');
+   * ```
+   */
+  disableTrigger(id: string): void {
+    if (!this._triggers.has(id)) {
+      throw new AgentError(`Trigger with id "${id}" not found`, 'TRIGGER_NOT_FOUND', {
+        triggerId: id,
+      });
+    }
+    this._disabledTriggers.add(id);
+  }
+
+  /**
+   * Re-enable a previously disabled trigger.
+   *
+   * @param id - Trigger ID
+   * @throws {AgentError} If no trigger with the given ID exists
+   */
+  enableTrigger(id: string): void {
+    if (!this._triggers.has(id)) {
+      throw new AgentError(`Trigger with id "${id}" not found`, 'TRIGGER_NOT_FOUND', {
+        triggerId: id,
+      });
+    }
+    this._disabledTriggers.delete(id);
+    if (this.isRunning()) {
+      this._stateChanged = true;
+      this._wake();
+    }
+  }
+
+  /**
+   * Check if a trigger is currently disabled.
+   *
+   * @param id - Trigger ID
+   * @returns True if the trigger exists and is disabled
+   */
+  isTriggerDisabled(id: string): boolean {
+    return this._disabledTriggers.has(id);
+  }
+
+  /**
+   * Restore state to the value passed as initialState in the constructor.
+   *
+   * Works whether the agent is running, paused, or stopped. If clearTriggersOnReset
+   * is true, all registered triggers are also removed.
+   *
+   * **Limitation:** The initialState reference is stored as-is, not deep cloned.
+   * If the initial state object was mutated after construction (e.g., via direct
+   * action mutation), reset() will restore to that mutated object. Use a factory
+   * pattern or construct a new Agent for true immutable resets.
+   *
+   * @param clearTriggersOnReset - If true, also clears all triggers (default: false)
+   * @throws {AgentError} If no initialState was provided to the constructor
+   */
+  reset(clearTriggersOnReset = false): void {
+    if (this._initialState === undefined) {
+      throw new AgentError(
+        'Cannot reset: no initialState was provided to the constructor',
+        'AGENT_NOT_INITIALIZED',
+        { currentStatus: this._status },
+      );
+    }
+    this.setState(this._initialState);
+    if (clearTriggersOnReset) {
+      this.clearTriggers();
+    }
   }
 
   /**
@@ -256,6 +372,11 @@ export class Agent<TState = unknown> {
     try {
       if (this._status === AgentStatusEnum.Running) {
         throw new AgentError('Agent is already running', 'AGENT_ALREADY_RUNNING', {
+          currentStatus: this._status,
+        });
+      }
+      if (this._status === AgentStatusEnum.Paused) {
+        throw new AgentError('Agent is paused; call resume() instead', 'AGENT_PAUSED', {
           currentStatus: this._status,
         });
       }
@@ -295,7 +416,7 @@ export class Agent<TState = unknown> {
    */
   async stop(): Promise<void> {
     try {
-      if (this._status !== AgentStatusEnum.Running) {
+      if (this._status !== AgentStatusEnum.Running && this._status !== AgentStatusEnum.Paused) {
         throw new AgentError('Agent is not running', 'AGENT_NOT_RUNNING', {
           currentStatus: this._status,
         });
@@ -343,6 +464,106 @@ export class Agent<TState = unknown> {
   }
 
   /**
+   * Check if agent is paused
+   *
+   * @returns True if agent is paused
+   */
+  isPaused(): boolean {
+    return this._status === AgentStatusEnum.Paused;
+  }
+
+  /**
+   * Pause the agent, temporarily suspending trigger evaluation.
+   *
+   * The agent stops evaluating triggers but retains all registered triggers,
+   * current state, and pending settle() promises. Pending settle() timeouts
+   * continue to tick while paused. Resume with resume().
+   *
+   * @throws {AgentError} If agent is not running
+   * @throws {AgentError} If agent is already paused
+   *
+   * @example
+   * ```typescript
+   * await agent.pause();
+   * // ... triggers are not evaluated ...
+   * await agent.resume();
+   * ```
+   */
+  async pause(): Promise<void> {
+    try {
+      if (this._status === AgentStatusEnum.Paused) {
+        throw new AgentError('Agent is already paused', 'AGENT_ALREADY_PAUSED', {
+          currentStatus: this._status,
+        });
+      }
+      if (this._status !== AgentStatusEnum.Running) {
+        throw new AgentError('Agent is not running', 'AGENT_NOT_RUNNING', {
+          currentStatus: this._status,
+        });
+      }
+
+      this._status = AgentStatusEnum.Paused;
+      this._shouldRun = false;
+
+      // Wake the loop so it exits its current wait immediately
+      this._wake();
+
+      // Wait for the execution loop to finish its current cycle and exit
+      if (this._executionLoop) {
+        await this._executionLoop;
+        this._executionLoop = null;
+      }
+      // NOTE: _settleResolvers are intentionally NOT rejected here.
+      // Their timeouts keep ticking. They will be resolved/rejected when
+      // resume() restarts the loop and quiet cycles are detected.
+    } catch (error) {
+      if (this._onError && error instanceof Error) {
+        this._onError(error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Resume a paused agent, restarting trigger evaluation.
+   *
+   * Triggers are immediately re-evaluated on resume. Does not reset the
+   * trigger ID counter or event emission counts.
+   *
+   * @throws {AgentError} If agent is not paused
+   *
+   * @example
+   * ```typescript
+   * await agent.pause();
+   * await agent.resume();
+   * ```
+   */
+  async resume(): Promise<void> {
+    try {
+      if (this._status !== AgentStatusEnum.Paused) {
+        throw new AgentError('Agent is not paused', 'AGENT_NOT_PAUSED', {
+          currentStatus: this._status,
+        });
+      }
+
+      this._status = AgentStatusEnum.Running;
+      this._shouldRun = true;
+      this._stateChanged = true; // Re-evaluate triggers immediately on resume
+
+      // Restart the execution loop
+      this._executionLoop = this._runExecutionLoop();
+
+      // Wake any pending settle() waiters
+      this._wake();
+    } catch (error) {
+      if (this._onError && error instanceof Error) {
+        this._onError(error);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Wait for all pending actions and cascading triggers to complete
    *
    * Returns a promise that resolves when the agent has been quiet for the specified
@@ -379,8 +600,8 @@ export class Agent<TState = unknown> {
       });
     }
 
-    // If already quiet enough, resolve immediately
-    if (this._consecutiveQuietCycles >= quietCycles) {
+    // If already quiet enough AND no pending state changes, resolve immediately
+    if (!this._stateChanged && this._consecutiveQuietCycles >= quietCycles) {
       return Promise.resolve();
     }
 
@@ -509,7 +730,7 @@ export class Agent<TState = unknown> {
         // Only evaluate triggers if state has changed (optimization for many triggers)
         if (this._stateChanged) {
           this._stateChanged = false;
-          const triggers = this.getAllTriggers();
+          const triggers = this._getSortedTriggers();
 
           for (const trigger of triggers) {
             if (!this._shouldRun) {
@@ -556,6 +777,11 @@ export class Agent<TState = unknown> {
    */
   private async _checkAndExecuteTrigger(trigger: Trigger<TState>): Promise<void> {
     try {
+      // Skip disabled triggers without removing them
+      if (this._disabledTriggers.has(trigger.id)) {
+        return;
+      }
+
       const state = this._state.get();
 
       // Check if trigger condition is met
@@ -604,6 +830,15 @@ export class Agent<TState = unknown> {
           this.removeTrigger(trigger.id);
         }
       }
+
+      // Handle maxFires limit — skip if repeat: false already removed the trigger
+      if (trigger.maxFires !== undefined && this._triggers.has(trigger.id)) {
+        const count = (this._triggerFireCount.get(trigger.id) ?? 0) + 1;
+        this._triggerFireCount.set(trigger.id, count);
+        if (count >= trigger.maxFires) {
+          this.removeTrigger(trigger.id);
+        }
+      }
     } catch (error) {
       // Catch any unexpected errors and report them
       if (this._onError) {
@@ -614,6 +849,25 @@ export class Agent<TState = unknown> {
         }
       }
     }
+  }
+
+  /**
+   * Invalidate cached priority ordering after trigger collection changes.
+   */
+  private _invalidateSortedTriggers(): void {
+    this._sortedTriggersCache = null;
+  }
+
+  /**
+   * Get triggers ordered by priority, preserving insertion order for ties.
+   */
+  private _getSortedTriggers(): Trigger<TState>[] {
+    if (!this._sortedTriggersCache) {
+      this._sortedTriggersCache = this.getAllTriggers().sort(
+        (a, b) => (b.priority ?? 0) - (a.priority ?? 0),
+      );
+    }
+    return this._sortedTriggersCache;
   }
 
   /**
@@ -754,6 +1008,25 @@ export class Agent<TState = unknown> {
    */
   removeEventTrigger(_event: string, triggerId: string): void {
     // event parameter kept for API clarity, even though it's not used internally
+    this.removeTrigger(triggerId);
+  }
+
+  /**
+   * Remove a trigger by ID. Shorthand for removeTrigger().
+   *
+   * Consistent with DOM/EventEmitter convention for a concise off() call.
+   *
+   * @param triggerId - Trigger ID to remove
+   * @throws {AgentError} If no trigger with the given ID exists
+   *
+   * @example
+   * ```typescript
+   * const id = agent.when((state) => state.count > 0, [action]);
+   * // Later:
+   * agent.off(id);
+   * ```
+   */
+  off(triggerId: string): void {
     this.removeTrigger(triggerId);
   }
 

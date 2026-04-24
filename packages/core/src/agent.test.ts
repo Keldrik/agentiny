@@ -9,7 +9,7 @@ describe('Agent', () => {
   });
 
   afterEach(async () => {
-    if (agent.isRunning()) {
+    if (agent.isRunning() || agent.isPaused()) {
       await agent.stop();
     }
   });
@@ -127,6 +127,19 @@ describe('Agent', () => {
       }).toThrow(AgentError);
     });
 
+    it('should reject invalid maxFires values', () => {
+      for (const maxFires of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN]) {
+        expect(() => {
+          agent.addTrigger({
+            id: `invalid-max-fires-${String(maxFires)}`,
+            check: () => true,
+            actions: [],
+            maxFires,
+          });
+        }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+      }
+    });
+
     it('should get trigger by ID', () => {
       const checkFn = () => true;
       agent.addTrigger({
@@ -220,6 +233,19 @@ describe('Agent', () => {
       await agent.start();
       await expect(agent.start()).rejects.toThrow(AgentError);
       await agent.stop();
+    });
+
+    it('should reject start() while paused and preserve generated trigger IDs', async () => {
+      await agent.start();
+      const id1 = agent.when((state) => state.count > 0, [vi.fn()]);
+      await agent.pause();
+
+      await expect(agent.start()).rejects.toMatchObject({ code: 'AGENT_PAUSED' });
+      await agent.resume();
+
+      const id2 = agent.when((state) => state.count > 1, [vi.fn()]);
+      expect(id1).toBe('__trigger_1');
+      expect(id2).toBe('__trigger_2');
     });
 
     it('should stop agent', async () => {
@@ -1631,6 +1657,677 @@ describe('Agent', () => {
         expect(condition).toHaveBeenCalled();
         expect(action).toHaveBeenCalled();
       });
+    });
+  });
+
+  // ─── updateState() ───────────────────────────────────────────────────────────
+
+  describe('updateState()', () => {
+    it('should merge partial into current state', () => {
+      const a = new Agent({ initialState: { count: 0, name: 'test' } });
+      a.updateState({ count: 5 });
+      expect(a.getState()).toEqual({ count: 5, name: 'test' });
+    });
+
+    it('should preserve fields not in the partial', () => {
+      const a = new Agent({ initialState: { count: 0, name: 'hello', flag: true } });
+      a.updateState({ count: 42 });
+      expect(a.getState().name).toBe('hello');
+      expect(a.getState().flag).toBe(true);
+    });
+
+    it('should trigger re-evaluation when agent is running', async () => {
+      const a = new Agent({ initialState: { count: 0, label: '' } });
+      const action = vi.fn();
+      a.when((state) => state.count > 0, [action]);
+      await a.start();
+      a.updateState({ count: 1 });
+      await a.settle();
+      await a.stop();
+      expect(action).toHaveBeenCalled();
+    });
+
+    it('should work when agent is stopped', () => {
+      const a = new Agent({ initialState: { count: 0, name: 'x' } });
+      a.updateState({ name: 'updated' });
+      expect(a.getState()).toEqual({ count: 0, name: 'updated' });
+    });
+  });
+
+  // ─── pause() / resume() ──────────────────────────────────────────────────────
+
+  describe('pause() / resume()', () => {
+    it('should pause a running agent', async () => {
+      await agent.start();
+      await agent.pause();
+      expect(agent.isPaused()).toBe(true);
+      expect(agent.getStatus()).toBe('paused');
+      expect(agent.isRunning()).toBe(false);
+    });
+
+    it('should resume a paused agent', async () => {
+      await agent.start();
+      await agent.pause();
+      await agent.resume();
+      expect(agent.isRunning()).toBe(true);
+      expect(agent.isPaused()).toBe(false);
+      expect(agent.getStatus()).toBe('running');
+    });
+
+    it('should throw AGENT_ALREADY_PAUSED when pausing twice', async () => {
+      await agent.start();
+      await agent.pause();
+      await expect(agent.pause()).rejects.toThrow(AgentError);
+      await expect(agent.pause()).rejects.toMatchObject({ code: 'AGENT_ALREADY_PAUSED' });
+    });
+
+    it('should throw AGENT_NOT_RUNNING when pausing an idle agent', async () => {
+      await expect(agent.pause()).rejects.toThrow(AgentError);
+      await expect(agent.pause()).rejects.toMatchObject({ code: 'AGENT_NOT_RUNNING' });
+    });
+
+    it('should throw AGENT_NOT_RUNNING when pausing a stopped agent', async () => {
+      await agent.start();
+      await agent.stop();
+      await expect(agent.pause()).rejects.toMatchObject({ code: 'AGENT_NOT_RUNNING' });
+    });
+
+    it('should throw AGENT_NOT_PAUSED when resuming a running agent', async () => {
+      await agent.start();
+      await expect(agent.resume()).rejects.toMatchObject({ code: 'AGENT_NOT_PAUSED' });
+    });
+
+    it('should throw AGENT_NOT_PAUSED when resuming an idle agent', async () => {
+      await expect(agent.resume()).rejects.toMatchObject({ code: 'AGENT_NOT_PAUSED' });
+    });
+
+    it('should throw AGENT_NOT_PAUSED when resuming a stopped agent', async () => {
+      await agent.start();
+      await agent.stop();
+      await expect(agent.resume()).rejects.toMatchObject({ code: 'AGENT_NOT_PAUSED' });
+    });
+
+    it('should not evaluate triggers while paused', async () => {
+      const action = vi.fn();
+      agent.when((state) => state.count > 0, [action]);
+      await agent.start();
+      await agent.pause();
+      agent.setState({ count: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('should resume trigger evaluation after resume()', async () => {
+      const action = vi.fn();
+      agent.when((state) => state.count > 0, [action]);
+      await agent.start();
+      await agent.pause();
+      agent.setState({ count: 1 });
+      await agent.resume();
+      await agent.settle();
+      await agent.stop();
+      expect(action).toHaveBeenCalled();
+    });
+
+    it('should be stoppable from paused state', async () => {
+      await agent.start();
+      await agent.pause();
+      await agent.stop();
+      expect(agent.getStatus()).toBe('stopped');
+    });
+
+    it('should not reset triggerIdCounter on pause/resume', async () => {
+      await agent.start();
+      // Add a trigger AFTER start() so the counter advances after the reset
+      const id1 = agent.when((state) => state.count > 0, [vi.fn()]);
+      await agent.pause();
+      await agent.resume();
+      // Counter should continue from where it left off, not reset
+      const id2 = agent.when((state) => state.count > 1, [vi.fn()]);
+      expect(id2).not.toBe(id1);
+      expect(id2).toBe('__trigger_2');
+    });
+
+    it('should not reject pending settle() promises on pause', async () => {
+      agent.when((state) => state.count > 0, [vi.fn()]);
+      await agent.start();
+      agent.setState({ count: 1 });
+      // Start a settle with very high quiet cycles so it won't resolve quickly
+      const settlePromise = agent.settle(1000, 5000);
+      let rejected = false;
+      settlePromise.catch(() => {
+        rejected = true;
+      });
+      await agent.pause();
+      // Give it a moment to confirm no rejection
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(rejected).toBe(false);
+      // Clean up: stop will reject the pending settle
+      await agent.stop();
+    });
+
+    it('isPaused() returns false when running', async () => {
+      await agent.start();
+      expect(agent.isPaused()).toBe(false);
+    });
+
+    it('isPaused() returns false when idle', () => {
+      expect(agent.isPaused()).toBe(false);
+    });
+  });
+
+  // ─── disableTrigger() / enableTrigger() / isTriggerDisabled() ────────────────
+
+  describe('disableTrigger() / enableTrigger() / isTriggerDisabled()', () => {
+    it('should not fire a disabled trigger', async () => {
+      const action = vi.fn();
+      agent.addTrigger({ id: 'dt-1', check: (state) => state.count > 0, actions: [action] });
+      agent.disableTrigger('dt-1');
+      await agent.start();
+      agent.setState({ count: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('should fire a trigger after re-enabling it', async () => {
+      const action = vi.fn();
+      agent.addTrigger({ id: 'dt-2', check: (state) => state.count > 0, actions: [action] });
+      agent.disableTrigger('dt-2');
+      agent.enableTrigger('dt-2');
+      await agent.start();
+      agent.setState({ count: 1 });
+      await agent.settle();
+      expect(action).toHaveBeenCalled();
+    });
+
+    it('should evaluate a re-enabled trigger immediately when state already matches', async () => {
+      const action = vi.fn();
+      agent.addTrigger({ id: 'dt-wake', check: (state) => state.count > 0, actions: [action] });
+      await agent.start();
+      agent.disableTrigger('dt-wake');
+      agent.setState({ count: 1 });
+      await agent.settle();
+      expect(action).not.toHaveBeenCalled();
+
+      agent.enableTrigger('dt-wake');
+      await agent.settle();
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not evaluate re-enabled triggers while paused', async () => {
+      const action = vi.fn();
+      agent.addTrigger({ id: 'dt-paused', check: (state) => state.count > 0, actions: [action] });
+      await agent.start();
+      await agent.pause();
+      agent.disableTrigger('dt-paused');
+      agent.setState({ count: 1 });
+      agent.enableTrigger('dt-paused');
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(action).not.toHaveBeenCalled();
+
+      await agent.resume();
+      await agent.settle();
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('should throw TRIGGER_NOT_FOUND for unknown id in disableTrigger()', () => {
+      expect(() => agent.disableTrigger('no-such-id')).toThrow(AgentError);
+      expect(() => agent.disableTrigger('no-such-id')).toThrowError(
+        expect.objectContaining({ code: 'TRIGGER_NOT_FOUND' }),
+      );
+    });
+
+    it('should throw TRIGGER_NOT_FOUND for unknown id in enableTrigger()', () => {
+      expect(() => agent.enableTrigger('no-such-id')).toThrow(AgentError);
+      expect(() => agent.enableTrigger('no-such-id')).toThrowError(
+        expect.objectContaining({ code: 'TRIGGER_NOT_FOUND' }),
+      );
+    });
+
+    it('isTriggerDisabled() returns true when disabled', () => {
+      agent.addTrigger({ id: 'dt-3', check: () => true, actions: [vi.fn()] });
+      agent.disableTrigger('dt-3');
+      expect(agent.isTriggerDisabled('dt-3')).toBe(true);
+    });
+
+    it('isTriggerDisabled() returns false when enabled', () => {
+      agent.addTrigger({ id: 'dt-4', check: () => true, actions: [vi.fn()] });
+      expect(agent.isTriggerDisabled('dt-4')).toBe(false);
+    });
+
+    it('isTriggerDisabled() returns false after re-enabling', () => {
+      agent.addTrigger({ id: 'dt-5', check: () => true, actions: [vi.fn()] });
+      agent.disableTrigger('dt-5');
+      agent.enableTrigger('dt-5');
+      expect(agent.isTriggerDisabled('dt-5')).toBe(false);
+    });
+
+    it('clearTriggers() also clears the disabled set', () => {
+      agent.addTrigger({ id: 'dt-6', check: () => true, actions: [vi.fn()] });
+      agent.disableTrigger('dt-6');
+      agent.clearTriggers();
+      // Re-add with same id to check disabled state was cleared
+      agent.addTrigger({ id: 'dt-6', check: () => true, actions: [vi.fn()] });
+      expect(agent.isTriggerDisabled('dt-6')).toBe(false);
+    });
+
+    it('removeTrigger() also cleans up the disabled set entry', () => {
+      agent.addTrigger({ id: 'dt-7', check: () => true, actions: [vi.fn()] });
+      agent.disableTrigger('dt-7');
+      agent.removeTrigger('dt-7');
+      // Re-add — if disabled set was cleaned up, it should not be disabled
+      agent.addTrigger({ id: 'dt-7', check: () => true, actions: [vi.fn()] });
+      expect(agent.isTriggerDisabled('dt-7')).toBe(false);
+    });
+  });
+
+  // ─── maxFires ────────────────────────────────────────────────────────────────
+
+  describe('maxFires on Trigger', () => {
+    it('should auto-remove the trigger after maxFires fires', async () => {
+      // Use explicit setState+settle cycles to trigger each fire separately.
+      // Direct state mutation in actions does not call setState(), so each
+      // evaluation cycle only fires the trigger once. We drive 3 separate cycles.
+      const action = vi.fn();
+      agent.addTrigger({
+        id: 'mf-1',
+        check: (state) => state.count > 0,
+        actions: [action],
+        maxFires: 3,
+        repeat: true,
+      });
+      await agent.start();
+      agent.setState({ count: 1 });
+      await agent.settle();
+      agent.setState({ count: 2 });
+      await agent.settle();
+      agent.setState({ count: 3 });
+      await agent.settle();
+      // Trigger should now be removed (fired 3 times)
+      agent.setState({ count: 4 });
+      await agent.settle();
+      expect(action).toHaveBeenCalledTimes(3);
+      expect(agent.getTrigger('mf-1')).toBeUndefined();
+    });
+
+    it('should fire exactly maxFires times and stop', async () => {
+      const action = vi.fn();
+      agent.addTrigger({
+        id: 'mf-2',
+        check: (state) => state.count > 0,
+        actions: [action],
+        maxFires: 2,
+        repeat: true,
+      });
+      await agent.start();
+      // Fire 1
+      agent.setState({ count: 1 });
+      await agent.settle();
+      // Fire 2 (trigger removed after this)
+      agent.setState({ count: 2 });
+      await agent.settle();
+      // Should NOT fire (trigger is gone)
+      agent.setState({ count: 3 });
+      await agent.settle();
+      expect(action).toHaveBeenCalledTimes(2);
+    });
+
+    it('maxFires: 1 fires only once, like repeat: false', async () => {
+      const action = vi.fn();
+      agent.addTrigger({
+        id: 'mf-3',
+        check: (state) => state.count > 0,
+        actions: [action],
+        maxFires: 1,
+        repeat: true,
+      });
+      await agent.start();
+      agent.setState({ count: 1 });
+      await agent.settle();
+      // Change state again — should not fire since trigger was removed
+      agent.setState({ count: 2 });
+      await agent.settle();
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(agent.getTrigger('mf-3')).toBeUndefined();
+    });
+
+    it('when both repeat: false and maxFires set, trigger is removed after first fire', async () => {
+      const action = vi.fn();
+      agent.addTrigger({
+        id: 'mf-4',
+        check: (state) => state.count > 0,
+        actions: [action],
+        repeat: false,
+        maxFires: 5,
+      });
+      await agent.start();
+      agent.setState({ count: 1 });
+      await agent.settle();
+      agent.setState({ count: 2 });
+      await agent.settle();
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('clearTriggers() cleans up fire count tracking', async () => {
+      const action = vi.fn();
+      agent.addTrigger({
+        id: 'mf-5',
+        check: (state) => state.count > 0,
+        actions: [action],
+        maxFires: 5,
+        repeat: true,
+      });
+      await agent.start();
+      agent.setState({ count: 1 });
+      await agent.settle();
+      agent.setState({ count: 2 });
+      await agent.settle();
+      expect(action).toHaveBeenCalledTimes(2);
+      // clearTriggers should remove the trigger and clean up tracking
+      agent.clearTriggers();
+      expect(agent.getAllTriggers()).toHaveLength(0);
+    });
+  });
+
+  // ─── priority ────────────────────────────────────────────────────────────────
+  //
+  // Priority tests use state-mutation chaining: in a single evaluation pass,
+  // mutations from one trigger are immediately visible to subsequent trigger
+  // checks (same mutable state reference). We exploit this to verify order
+  // without relying on external closure variables or timing.
+
+  describe('priority on Trigger', () => {
+    it('should evaluate higher priority trigger before lower priority', async () => {
+      // High (priority 10) fires first → sets state.flag = 'high'.
+      // Low (priority 0) checks flag === 'high' before acting → if high ran first, low runs.
+      // Final: flag = 'done' iff evaluation order is high→low.
+      interface S {
+        go: boolean;
+        flag: string;
+      }
+      const a = new Agent<S>({ initialState: { go: false, flag: '' } });
+      a.addTrigger({
+        id: 'high',
+        priority: 10,
+        repeat: false,
+        check: (s) => s.go,
+        actions: [
+          (s) => {
+            s.flag = 'high';
+          },
+        ],
+      });
+      a.addTrigger({
+        id: 'low',
+        priority: 0,
+        repeat: false,
+        check: (s) => s.go && s.flag === 'high',
+        actions: [
+          (s) => {
+            s.flag = 'done';
+          },
+        ],
+      });
+      await a.start();
+      a.setState({ go: true, flag: '' });
+      await a.settle();
+      await a.stop();
+      // If high fired first, low saw flag='high' in the same pass and ran → 'done'
+      expect(a.getState().flag).toBe('done');
+    });
+
+    it('should maintain insertion order for triggers with equal priority', async () => {
+      // First (priority 5) fires → sets state.step = 'first'.
+      // Second (priority 5) checks state.step === 'first' → only runs if first ran first.
+      interface S {
+        go: boolean;
+        step: string;
+      }
+      const a = new Agent<S>({ initialState: { go: false, step: '' } });
+      a.addTrigger({
+        id: 'first',
+        priority: 5,
+        repeat: false,
+        check: (s) => s.go,
+        actions: [
+          (s) => {
+            s.step = 'first';
+          },
+        ],
+      });
+      a.addTrigger({
+        id: 'second',
+        priority: 5,
+        repeat: false,
+        check: (s) => s.go && s.step === 'first',
+        actions: [
+          (s) => {
+            s.step = 'done';
+          },
+        ],
+      });
+      await a.start();
+      a.setState({ go: true, step: '' });
+      await a.settle();
+      await a.stop();
+      expect(a.getState().step).toBe('done');
+    });
+
+    it('should treat undefined priority as 0 (same as explicit 0)', async () => {
+      // 'no-priority' (undefined) and 'explicit-zero' (priority: 0) are equal.
+      // Insertion order is maintained, so 'no-priority' fires first.
+      interface S {
+        go: boolean;
+        step: string;
+      }
+      const a = new Agent<S>({ initialState: { go: false, step: '' } });
+      a.addTrigger({
+        id: 'no-priority',
+        repeat: false,
+        check: (s) => s.go,
+        actions: [
+          (s) => {
+            s.step = 'no-priority';
+          },
+        ],
+      });
+      a.addTrigger({
+        id: 'explicit-zero',
+        priority: 0,
+        repeat: false,
+        check: (s) => s.go && s.step === 'no-priority',
+        actions: [
+          (s) => {
+            s.step = 'done';
+          },
+        ],
+      });
+      await a.start();
+      a.setState({ go: true, step: '' });
+      await a.settle();
+      await a.stop();
+      expect(a.getState().step).toBe('done');
+    });
+
+    it('should support negative priority (evaluated after default 0)', async () => {
+      // 'normal' (priority 0) fires before 'low-prio' (priority -5).
+      interface S {
+        go: boolean;
+        step: string;
+      }
+      const a = new Agent<S>({ initialState: { go: false, step: '' } });
+      a.addTrigger({
+        id: 'normal',
+        priority: 0,
+        repeat: false,
+        check: (s) => s.go,
+        actions: [
+          (s) => {
+            s.step = 'normal';
+          },
+        ],
+      });
+      a.addTrigger({
+        id: 'low-prio',
+        priority: -5,
+        repeat: false,
+        check: (s) => s.go && s.step === 'normal',
+        actions: [
+          (s) => {
+            s.step = 'done';
+          },
+        ],
+      });
+      await a.start();
+      a.setState({ go: true, step: '' });
+      await a.settle();
+      await a.stop();
+      expect(a.getState().step).toBe('done');
+    });
+
+    it('should include triggers added after the priority order has been cached', async () => {
+      interface S {
+        go: boolean;
+        step: string;
+      }
+      const a = new Agent<S>({ initialState: { go: false, step: '' } });
+      a.addTrigger({
+        id: 'low',
+        priority: 0,
+        repeat: false,
+        check: (s) => s.go && s.step === 'high',
+        actions: [
+          (s) => {
+            s.step = 'done';
+          },
+        ],
+      });
+
+      await a.start();
+      a.setState({ go: false, step: '' });
+      await a.settle();
+
+      a.addTrigger({
+        id: 'high',
+        priority: 10,
+        repeat: false,
+        check: (s) => s.go,
+        actions: [
+          (s) => {
+            s.step = 'high';
+          },
+        ],
+      });
+      a.setState({ go: true, step: '' });
+      await a.settle();
+      await a.stop();
+
+      expect(a.getState().step).toBe('done');
+    });
+  });
+
+  // ─── reset() ─────────────────────────────────────────────────────────────────
+
+  describe('reset()', () => {
+    it('should restore state to initialState when running', async () => {
+      const a = new Agent({ initialState: { count: 0 } });
+      await a.start();
+      a.setState({ count: 99 });
+      a.reset();
+      expect(a.getState().count).toBe(0);
+      await a.stop();
+    });
+
+    it('should restore state to initialState when stopped', async () => {
+      const a = new Agent({ initialState: { count: 0 } });
+      await a.start();
+      a.setState({ count: 99 });
+      await a.stop();
+      a.reset();
+      expect(a.getState().count).toBe(0);
+    });
+
+    it('should restore state to initialState when paused', async () => {
+      const a = new Agent({ initialState: { count: 0 } });
+      await a.start();
+      a.setState({ count: 99 });
+      await a.pause();
+      a.reset();
+      expect(a.getState().count).toBe(0);
+      await a.stop();
+    });
+
+    it('should keep triggers by default (clearTriggersOnReset = false)', async () => {
+      const a = new Agent({ initialState: { count: 0 } });
+      a.addTrigger({ id: 'r-1', check: () => true, actions: [vi.fn()] });
+      a.reset();
+      expect(a.getTrigger('r-1')).toBeDefined();
+    });
+
+    it('should clear triggers when clearTriggersOnReset = true', async () => {
+      const a = new Agent({ initialState: { count: 0 } });
+      a.addTrigger({ id: 'r-2', check: () => true, actions: [vi.fn()] });
+      a.reset(true);
+      expect(a.getTrigger('r-2')).toBeUndefined();
+      expect(a.getAllTriggers()).toHaveLength(0);
+    });
+
+    it('should throw AGENT_NOT_INITIALIZED if no initialState was provided', () => {
+      const a = new Agent<{ count: number }>();
+      expect(() => a.reset()).toThrow(AgentError);
+      expect(() => a.reset()).toThrowError(
+        expect.objectContaining({ code: 'AGENT_NOT_INITIALIZED' }),
+      );
+    });
+
+    it('should trigger re-evaluation after reset when running', async () => {
+      const action = vi.fn();
+      const a = new Agent({ initialState: { count: 5 } });
+      a.when((state) => state.count === 5, [action]);
+      await a.start();
+      a.setState({ count: 99 });
+      // Reset back to 5, which should fire the trigger
+      a.reset();
+      await a.settle();
+      await a.stop();
+      expect(action).toHaveBeenCalled();
+    });
+  });
+
+  // ─── off() ───────────────────────────────────────────────────────────────────
+
+  describe('off()', () => {
+    it('should remove a trigger by ID', () => {
+      agent.addTrigger({ id: 'off-1', check: () => true, actions: [vi.fn()] });
+      agent.off('off-1');
+      expect(agent.getTrigger('off-1')).toBeUndefined();
+    });
+
+    it('should throw AgentError for a non-existent ID (same as removeTrigger)', () => {
+      expect(() => agent.off('no-such-id')).toThrow(AgentError);
+      expect(() => agent.off('no-such-id')).toThrowError(
+        expect.objectContaining({ code: 'TRIGGER_NOT_FOUND' }),
+      );
+    });
+
+    it('removed trigger should no longer fire', async () => {
+      const action = vi.fn();
+      const id = agent.when((state) => state.count > 0, [action]);
+      agent.off(id);
+      await agent.start();
+      agent.setState({ count: 1 });
+      await agent.settle();
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('should work as shorthand for removeEventTrigger', async () => {
+      const action = vi.fn();
+      const id = agent.on('my-event', [action]);
+      agent.off(id);
+      await agent.start();
+      agent.emitEvent('my-event');
+      await agent.settle();
+      expect(action).not.toHaveBeenCalled();
     });
   });
 });
