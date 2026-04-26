@@ -22,7 +22,6 @@ export class State<T> {
     this._logger =
       logger ??
       ((error) => {
-        // eslint-disable-next-line no-undef
         console.error('Error in state subscriber:', error);
       });
   }

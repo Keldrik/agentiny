@@ -56,9 +56,9 @@ npm run typecheck -w @agentiny/core  # Type check specific package
 
 ### Linting & Formatting
 ```bash
-npm run lint           # Run ESLint on all source files (src/**/*.ts)
-npm run format         # Check formatting with Prettier
-npm run format:write   # Auto-fix formatting with Prettier
+npm run lint           # Run Oxlint on package source files
+npm run format         # Check formatting with Oxfmt
+npm run format:write   # Auto-fix formatting with Oxfmt
 ```
 
 ### Full validation (use before commits)
@@ -122,14 +122,11 @@ These allow AI models to participate in trigger-action flows by generating respo
 
 All packages have `strict: true` in their tsconfig.json. Maintain this strictness when modifying code.
 
-## ESLint Configuration
+## Linting And Formatting
 
-Rules enforced:
-- TypeScript recommended rules
-- Array types must use `Type[]` syntax (not `Array<Type>`)
-- Generic constructors must use explicit type syntax
-
-The config ignores dist/ and node_modules/.
+Oxlint handles linting through the root `npm run lint` script. Oxfmt handles
+formatting through `npm run format` and `npm run format:write`, with formatting
+options stored in `.oxfmtrc.json`.
 
 ## Common Development Patterns
 

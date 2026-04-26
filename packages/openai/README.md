@@ -349,7 +349,7 @@ For detailed API documentation:
 Contributions are welcome! Please ensure:
 
 - Code passes TypeScript strict mode checks
-- ESLint rules are followed
+- Oxlint checks pass
 - Changes are well-documented
 
 ## License

@@ -21,20 +21,19 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
-    "moduleResolution": "node10",
+    "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
     "rootDir": ".",
-    "baseUrl": ".",
     "paths": {
-      "@agentiny/core": ["packages/core/src/index.ts"],
-      "@agentiny/utils": ["packages/utils/src/index.ts"],
-      "@agentiny/openai": ["packages/openai/src/index.ts"],
-      "@agentiny/anthropic": ["packages/anthropic/src/index.ts"],
-      "@agentiny/gemini": ["packages/gemini/src/index.ts"]
+      "@agentiny/core": ["./packages/core/src/index.ts"],
+      "@agentiny/utils": ["./packages/utils/src/index.ts"],
+      "@agentiny/openai": ["./packages/openai/src/index.ts"],
+      "@agentiny/anthropic": ["./packages/anthropic/src/index.ts"],
+      "@agentiny/gemini": ["./packages/gemini/src/index.ts"]
     }
   },
   "include": ["packages/**/*.ts", "examples/**/*.ts"],

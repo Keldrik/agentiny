@@ -1,5 +1,13 @@
 import type { ActionFn } from '@agentiny/core';
 
+type ZodParseResult =
+  | { success: true; data: unknown }
+  | { success: false; error?: { errors?: unknown[] } };
+
+interface ZodLikeSchema {
+  safeParse: (state: unknown) => ZodParseResult;
+}
+
 /**
  * Validation error class
  *
@@ -123,28 +131,20 @@ export function withSchema<TState = unknown>(
 ): ActionFn<unknown> {
   return async (state: unknown): Promise<void> => {
     try {
-      // Validate that schema is a Zod schema
-      if (!schema || typeof schema !== 'object' || !('parse' in schema)) {
+      if (!schema || typeof schema !== 'object' || !('safeParse' in schema)) {
         throw new ValidationError('Invalid schema: expected a Zod schema');
       }
 
-      // Validate the state using the schema
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (schema as any).safeParse(state);
+      const result = (schema as ZodLikeSchema).safeParse(state);
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (!(result as any).success) {
+      if (!result.success) {
         throw new ValidationError(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          `State validation failed: ${JSON.stringify((result as any).error?.errors)}`,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (result as any).error?.errors,
+          `State validation failed: ${JSON.stringify(result.error?.errors)}`,
+          result.error?.errors,
         );
       }
 
-      // Call the action with validated state
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await Promise.resolve(action((result as any).data));
+      await Promise.resolve(action(result.data as TState));
     } catch (error) {
       // Re-throw validation errors as-is
       if (error instanceof ValidationError) {
