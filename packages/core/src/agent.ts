@@ -3,6 +3,8 @@ import { evaluateConditions } from './conditions';
 import { executeActions } from './actions';
 import type { AgentConfig, Trigger, AgentStatus, ActionFn, ConditionFn, TriggerFn } from './types';
 import { AgentStatus as AgentStatusEnum } from './types';
+import type { AtOptions, EveryOptions, IntervalSpec } from './schedule';
+import { msUntil, nextOccurrence, parseInterval, parseTimeOfDay } from './schedule';
 
 /**
  * Error class for agent-related errors
@@ -82,6 +84,7 @@ export class Agent<TState = unknown> {
   private _disabledTriggers: Set<string> = new Set<string>();
   private _triggerFireCount: Map<string, number> = new Map<string, number>();
   private _sortedTriggersCache: Trigger<TState>[] | null = null;
+  private _scheduleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
    * Create a new Agent instance
@@ -241,6 +244,12 @@ export class Agent<TState = unknown> {
     this._triggerFireCount.delete(id);
     this._invalidateSortedTriggers();
 
+    const timer = this._scheduleTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this._scheduleTimers.delete(id);
+    }
+
     // Clean up from event tracking maps
     this._eventLastSeenByTrigger.forEach((triggerMap) => {
       triggerMap.delete(id);
@@ -263,6 +272,10 @@ export class Agent<TState = unknown> {
    * ```
    */
   clearTriggers(): void {
+    for (const timer of this._scheduleTimers.values()) {
+      clearTimeout(timer);
+    }
+    this._scheduleTimers.clear();
     this._triggers.clear();
     this._eventTriggers.clear();
     this._eventLastSeenByTrigger.clear();
@@ -424,6 +437,12 @@ export class Agent<TState = unknown> {
 
       this._status = AgentStatusEnum.Stopped;
       this._shouldRun = false;
+
+      // Cancel any pending scheduled timers so they don't fire post-stop
+      for (const timer of this._scheduleTimers.values()) {
+        clearTimeout(timer);
+      }
+      this._scheduleTimers.clear();
 
       // Wake the execution loop so it can exit immediately
       this._wake();
@@ -1246,6 +1265,185 @@ export class Agent<TState = unknown> {
     };
 
     this.addTrigger(trigger);
+    return triggerId;
+  }
+
+  /**
+   * Create a time-of-day trigger that fires at a specific wall-clock time.
+   *
+   * Time is interpreted in the host's local timezone. Accepts `"HH:MM"`
+   * (24-hour) or `"H:MMam"` / `"H:MMpm"` (12-hour, case-insensitive). By
+   * default repeats daily at the same wall-clock time; pass `{ once: true }`
+   * to fire only on the next occurrence and self-remove.
+   *
+   * @param time - Time-of-day string
+   * @param actionsOrConditions - Either actions array or conditions array
+   * @param actionsOrOptions - Actions array (when previous arg is conditions) or options
+   * @param optionsOptional - Options when using the conditions overload
+   * @returns The generated trigger ID
+   *
+   * @example
+   * ```typescript
+   * agent.at('21:30', [sendDailyReport]);
+   * agent.at('9:30am', [isWeekday], [sendStandupReminder]);
+   * agent.at('00:00', [resetCounters], { once: true });
+   * ```
+   */
+  at(
+    time: string,
+    actionsOrConditions: readonly ActionFn<TState>[] | readonly ConditionFn<TState>[],
+    actionsOrOptions?: readonly ActionFn<TState>[] | AtOptions,
+    optionsOptional?: AtOptions,
+  ): string {
+    const timeOfDay = parseTimeOfDay(time);
+
+    let conditions: readonly ConditionFn<TState>[] | undefined;
+    let actions: readonly ActionFn<TState>[];
+    let options: AtOptions | undefined;
+
+    if (Array.isArray(actionsOrOptions)) {
+      // Overload: at(time, conditions, actions, options?)
+      conditions = actionsOrConditions as readonly ConditionFn<TState>[];
+      actions = actionsOrOptions as readonly ActionFn<TState>[];
+      options = optionsOptional;
+    } else {
+      // Overload: at(time, actions, options?)
+      actions = actionsOrConditions as readonly ActionFn<TState>[];
+      options = actionsOrOptions as AtOptions | undefined;
+    }
+
+    const once = options?.once === true;
+    const triggerId = this._generateTriggerId();
+    let ready = false;
+
+    const check: TriggerFn<TState> = (): boolean => {
+      if (ready) {
+        ready = false;
+        return true;
+      }
+      return false;
+    };
+
+    const scheduleNext = (): void => {
+      if (!this._triggers.has(triggerId)) {
+        return;
+      }
+      const ms = msUntil(nextOccurrence(timeOfDay));
+      const timer = setTimeout(() => {
+        this._scheduleTimers.delete(triggerId);
+        if (!this._triggers.has(triggerId)) {
+          return;
+        }
+        ready = true;
+        this._stateChanged = true;
+        this._wake();
+        if (!once) {
+          scheduleNext();
+        }
+      }, ms);
+      this._scheduleTimers.set(triggerId, timer);
+    };
+
+    this.addTrigger({
+      id: triggerId,
+      check,
+      conditions,
+      actions,
+      repeat: !once,
+      priority: options?.priority,
+      maxFires: options?.maxFires,
+    });
+    scheduleNext();
+    return triggerId;
+  }
+
+  /**
+   * Create an interval-based trigger that fires every `interval`.
+   *
+   * Accepts a positive number of milliseconds, or a string of the form
+   * `<number><unit>` where unit is `ms`, `s`, `m`, or `h`.
+   *
+   * @param interval - Interval as milliseconds or duration string
+   * @param actionsOrConditions - Either actions array or conditions array
+   * @param actionsOrOptions - Actions array (when previous arg is conditions) or options
+   * @param optionsOptional - Options when using the conditions overload
+   * @returns The generated trigger ID
+   *
+   * @example
+   * ```typescript
+   * agent.every('2h', [refreshFeed]);
+   * agent.every(30_000, [hasPendingWork], [flushQueue]);
+   * agent.every('5s', [poll], { immediate: true });
+   * ```
+   */
+  every(
+    interval: IntervalSpec,
+    actionsOrConditions: readonly ActionFn<TState>[] | readonly ConditionFn<TState>[],
+    actionsOrOptions?: readonly ActionFn<TState>[] | EveryOptions,
+    optionsOptional?: EveryOptions,
+  ): string {
+    const intervalMs = parseInterval(interval);
+
+    let conditions: readonly ConditionFn<TState>[] | undefined;
+    let actions: readonly ActionFn<TState>[];
+    let options: EveryOptions | undefined;
+
+    if (Array.isArray(actionsOrOptions)) {
+      // Overload: every(interval, conditions, actions, options?)
+      conditions = actionsOrConditions as readonly ConditionFn<TState>[];
+      actions = actionsOrOptions as readonly ActionFn<TState>[];
+      options = optionsOptional;
+    } else {
+      // Overload: every(interval, actions, options?)
+      actions = actionsOrConditions as readonly ActionFn<TState>[];
+      options = actionsOrOptions as EveryOptions | undefined;
+    }
+
+    const triggerId = this._generateTriggerId();
+    let ready = false;
+
+    const check: TriggerFn<TState> = (): boolean => {
+      if (ready) {
+        ready = false;
+        return true;
+      }
+      return false;
+    };
+
+    const scheduleNext = (): void => {
+      if (!this._triggers.has(triggerId)) {
+        return;
+      }
+      const timer = setTimeout(() => {
+        this._scheduleTimers.delete(triggerId);
+        if (!this._triggers.has(triggerId)) {
+          return;
+        }
+        ready = true;
+        this._stateChanged = true;
+        this._wake();
+        scheduleNext();
+      }, intervalMs);
+      this._scheduleTimers.set(triggerId, timer);
+    };
+
+    this.addTrigger({
+      id: triggerId,
+      check,
+      conditions,
+      actions,
+      repeat: true,
+      priority: options?.priority,
+      maxFires: options?.maxFires,
+    });
+    scheduleNext();
+
+    if (options?.immediate === true) {
+      ready = true;
+      this._stateChanged = true;
+      this._wake();
+    }
+
     return triggerId;
   }
 }

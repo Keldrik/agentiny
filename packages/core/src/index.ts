@@ -23,3 +23,5 @@ export { AgentStatus } from './types';
 export { evaluateConditions } from './conditions';
 export { executeActions } from './actions';
 export type { ConditionResult } from './conditions';
+export { parseTimeOfDay, parseInterval, nextOccurrence, msUntil } from './schedule';
+export type { TimeOfDay, IntervalSpec, AtOptions, EveryOptions } from './schedule';

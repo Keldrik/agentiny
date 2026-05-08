@@ -2330,4 +2330,259 @@ describe('Agent', () => {
       expect(action).not.toHaveBeenCalled();
     });
   });
+
+  describe('every()', () => {
+    let scheduleAgent: Agent<{ count: number }>;
+
+    beforeEach(() => {
+      vi.useFakeTimers({
+        now: new Date(2025, 0, 15, 10, 0, 0, 0),
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      // High idleTimeout keeps the polling loop quiet so fake-timer advances
+      // don't spin through tens of thousands of idle ticks.
+      scheduleAgent = new Agent({
+        initialState: { count: 0 },
+        idleTimeout: 24 * 60 * 60 * 1000,
+      });
+    });
+
+    afterEach(async () => {
+      if (scheduleAgent.isRunning() || scheduleAgent.isPaused()) {
+        await scheduleAgent.stop();
+      }
+      vi.useRealTimers();
+    });
+
+    it('fires repeatedly at the requested ms interval', async () => {
+      const action = vi.fn();
+      scheduleAgent.every(1000, [action]);
+      await scheduleAgent.start();
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(action).toHaveBeenCalledTimes(3);
+    });
+
+    it('parses string intervals like "500ms" and "2s"', async () => {
+      const action = vi.fn();
+      const slow = vi.fn();
+      scheduleAgent.every('500ms', [action]);
+      scheduleAgent.every('2s', [slow]);
+      await scheduleAgent.start();
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(slow).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(slow).toHaveBeenCalledTimes(1);
+    });
+
+    it('honors immediate: true by firing on the next loop cycle', async () => {
+      const action = vi.fn();
+      scheduleAgent.every(10_000, [action], { immediate: true });
+      await scheduleAgent.start();
+
+      // No timer advancement yet — immediate flag should fire on the next cycle
+      await vi.advanceTimersByTimeAsync(0);
+      expect(action).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(action).toHaveBeenCalledTimes(2);
+    });
+
+    it('honors maxFires and self-removes', async () => {
+      const action = vi.fn();
+      const id = scheduleAgent.every(100, [action], { maxFires: 3 });
+      await scheduleAgent.start();
+
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(action).toHaveBeenCalledTimes(3);
+      expect(scheduleAgent.getTrigger(id)).toBeUndefined();
+    });
+
+    it('supports the conditions overload', async () => {
+      const action = vi.fn();
+      let allow = false;
+      scheduleAgent.every(100, [(): boolean => allow], [action]);
+      await scheduleAgent.start();
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(action).not.toHaveBeenCalled();
+
+      allow = true;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws AgentError with INVALID_INTERVAL on bad input', () => {
+      expect(() => scheduleAgent.every(0, [vi.fn()])).toThrow(AgentError);
+      expect(() => scheduleAgent.every('5x', [vi.fn()])).toThrow(AgentError);
+      try {
+        scheduleAgent.every('-1s', [vi.fn()]);
+      } catch (e) {
+        expect((e as AgentError).code).toBe('INVALID_INTERVAL');
+      }
+    });
+
+    it('removeTrigger cancels a pending fire', async () => {
+      const action = vi.fn();
+      const id = scheduleAgent.every(1000, [action]);
+      await scheduleAgent.start();
+
+      scheduleAgent.removeTrigger(id);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('stop() cancels pending timers and leaves no scheduled work', async () => {
+      const action = vi.fn();
+      scheduleAgent.every(1000, [action]);
+      await scheduleAgent.start();
+      // Let the execution loop park itself in _waitForNextCycle so stop()'s
+      // _wake() can resolve the race promise.
+      await vi.advanceTimersByTimeAsync(0);
+      await scheduleAgent.stop();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(action).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('at()', () => {
+    let scheduleAgent: Agent<{ count: number }>;
+
+    beforeEach(() => {
+      vi.useFakeTimers({
+        now: new Date(2025, 0, 15, 10, 0, 0, 0),
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      scheduleAgent = new Agent({
+        initialState: { count: 0 },
+        idleTimeout: 24 * 60 * 60 * 1000,
+      });
+    });
+
+    afterEach(async () => {
+      if (scheduleAgent.isRunning() || scheduleAgent.isPaused()) {
+        await scheduleAgent.stop();
+      }
+      vi.useRealTimers();
+    });
+
+    it('fires at a wall-clock time later today', async () => {
+      const action = vi.fn();
+      scheduleAgent.at('21:30', [action]);
+      await scheduleAgent.start();
+
+      // 11h30m until 21:30
+      await vi.advanceTimersByTimeAsync(11 * 60 * 60 * 1000 + 30 * 60 * 1000);
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires the next day when the time is already past', async () => {
+      const action = vi.fn();
+      // now is 10:00; 09:00 is in the past, so fires at 09:00 the next day
+      scheduleAgent.at('09:00', [action]);
+      await scheduleAgent.start();
+
+      // 23h until tomorrow 09:00
+      await vi.advanceTimersByTimeAsync(22 * 60 * 60 * 1000);
+      expect(action).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('repeats daily by default', async () => {
+      const action = vi.fn();
+      scheduleAgent.at('21:30', [action]);
+      await scheduleAgent.start();
+
+      // First fire at today 21:30
+      await vi.advanceTimersByTimeAsync(11 * 60 * 60 * 1000 + 30 * 60 * 1000);
+      expect(action).toHaveBeenCalledTimes(1);
+
+      // Second fire at tomorrow 21:30
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(action).toHaveBeenCalledTimes(2);
+    });
+
+    it('honors once: true and self-removes after firing', async () => {
+      const action = vi.fn();
+      const id = scheduleAgent.at('21:30', [action], { once: true });
+      await scheduleAgent.start();
+
+      await vi.advanceTimersByTimeAsync(11 * 60 * 60 * 1000 + 30 * 60 * 1000);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(scheduleAgent.getTrigger(id)).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('supports the conditions overload', async () => {
+      const action = vi.fn();
+      let allow = false;
+      scheduleAgent.at('21:30', [(): boolean => allow], [action]);
+      await scheduleAgent.start();
+
+      await vi.advanceTimersByTimeAsync(11 * 60 * 60 * 1000 + 30 * 60 * 1000);
+      expect(action).not.toHaveBeenCalled();
+
+      allow = true;
+      // Next firing one day later
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('removeTrigger cancels a pending fire', async () => {
+      const action = vi.fn();
+      const id = scheduleAgent.at('21:30', [action]);
+      await scheduleAgent.start();
+      scheduleAgent.removeTrigger(id);
+
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('stop() before fire prevents action and cancels timers', async () => {
+      const action = vi.fn();
+      scheduleAgent.at('21:30', [action]);
+      await scheduleAgent.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await scheduleAgent.stop();
+
+      await vi.advanceTimersByTimeAsync(48 * 60 * 60 * 1000);
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('throws AgentError with INVALID_TIME on bad input', () => {
+      expect(() => scheduleAgent.at('not-a-time', [vi.fn()])).toThrow(AgentError);
+      try {
+        scheduleAgent.at('25:00', [vi.fn()]);
+      } catch (e) {
+        expect((e as AgentError).code).toBe('INVALID_TIME');
+      }
+    });
+
+    it('clearTriggers() drains pending schedule timers', async () => {
+      const action = vi.fn();
+      scheduleAgent.at('21:30', [action]);
+      scheduleAgent.every(1000, [action]);
+      await scheduleAgent.start();
+
+      scheduleAgent.clearTriggers();
+
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(action).not.toHaveBeenCalled();
+    });
+  });
 });

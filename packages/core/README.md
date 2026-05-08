@@ -116,6 +116,33 @@ agent.emitEvent('saved');
 await agent.settle();
 ```
 
+### Time-Based Triggers
+
+`every(interval, ...)` fires repeatedly on a fixed interval. The interval is
+either milliseconds or a duration string (`ms`, `s`, `m`, `h`).
+
+```typescript
+agent.every('2h', [refreshFeed]);
+agent.every(30_000, [hasPendingWork], [flushQueue]);
+agent.every('5s', [poll], { immediate: true }); // also fires on the first cycle
+```
+
+`at(time, ...)` fires at a wall-clock time of day in the host's local timezone.
+Accepts `"HH:MM"` (24h) or `"H:MMam"` / `"H:MMpm"` (12h, case-insensitive).
+Repeats daily by default; pass `{ once: true }` to fire only on the next
+occurrence and self-remove.
+
+```typescript
+agent.at('21:30', [sendDailyReport]);
+agent.at('9:30am', [isWeekday], [sendStandupReminder]);
+agent.at('00:00', [resetCounters], { once: true });
+```
+
+Both methods accept the optional middle conditions array, return the trigger
+id, and honor `priority` / `maxFires` via the options bag. They throw an
+`AgentError` with code `INVALID_TIME` or `INVALID_INTERVAL` on malformed
+input.
+
 ### Pause And Resume
 
 Pause keeps state and triggers, but stops trigger evaluation.
@@ -242,6 +269,10 @@ stopped -> running
 - `once(check, conditions, actions): string`
 - `on(event, actions, repeat?): string`
 - `on(event, conditions, actions, repeat?): string`
+- `at(time, actions, options?): string`
+- `at(time, conditions, actions, options?): string`
+- `every(interval, actions, options?): string`
+- `every(interval, conditions, actions, options?): string`
 - `emitEvent(event): void`
 - `removeEventTrigger(event, id): void`
 - `removeAllEventTriggersForEvent(event): void`
