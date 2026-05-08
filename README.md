@@ -67,6 +67,20 @@ agent.setState({ temperature: 20 });
 await agent.stop();
 ```
 
+### Schedule actions on time
+
+`every(interval, ...)` fires repeatedly. The interval is either milliseconds or a
+duration string (`ms`, `s`, `m`, `h`). `at(time, ...)` fires at a wall-clock time
+in the host's local timezone — `"HH:MM"` (24h) or `"9:30pm"` / `"9:30 AM"` (12h);
+repeats daily, or pass `{ once: true }` for a single-shot.
+
+```typescript
+agent.every('2h', [refreshFeed]);
+agent.every('5s', [poll], { immediate: true });
+agent.at('21:30', [sendDailyReport]);
+agent.at('00:00', [resetCounters], { once: true });
+```
+
 ### Add AI actions
 
 ```typescript
@@ -85,7 +99,7 @@ agent.when((state) => state.userInput.length > 0, [aiAction]);
 
 ## Core Concepts
 
-- **Triggers** decide when an agent should act, using state checks or named events.
+- **Triggers** decide when an agent should act, using state checks, named events, or wall-clock time.
 - **Conditions** add extra guards before actions run.
 - **Actions** mutate state or perform side effects.
 - **`settle()`** waits for cascading trigger/action chains to finish.
