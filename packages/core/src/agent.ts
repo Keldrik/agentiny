@@ -1,34 +1,13 @@
 import { State } from './state';
 import { evaluateConditions } from './conditions';
 import { executeActions } from './actions';
+import { AgentError } from './errors';
 import type { AgentConfig, Trigger, AgentStatus, ActionFn, ConditionFn, TriggerFn } from './types';
 import { AgentStatus as AgentStatusEnum } from './types';
 import type { AtOptions, EveryOptions, IntervalSpec } from './schedule';
 import { msUntil, nextOccurrence, parseInterval, parseTimeOfDay } from './schedule';
 
-/**
- * Error class for agent-related errors
- *
- * Provides structured error information with error codes and context
- * for debugging and error handling.
- */
-export class AgentError extends Error {
-  /**
-   * Create a new AgentError instance
-   *
-   * @param message - Error message
-   * @param code - Error code for programmatic error handling
-   * @param context - Additional context information
-   */
-  constructor(
-    message: string,
-    public readonly code: string,
-    public readonly context?: unknown,
-  ) {
-    super(message);
-    this.name = 'AgentError';
-  }
-}
+export { AgentError };
 
 /**
  * Internal interface for tracking pending settle() promises
@@ -38,6 +17,16 @@ interface SettleResolver {
   resolve: () => void;
   reject: (error: Error) => void;
   timeoutId?: ReturnType<typeof setTimeout>;
+}
+
+interface DelayWaiter {
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (completed: boolean) => void;
+}
+
+interface ScheduleController {
+  start: () => void;
+  stop: (clearReady: boolean) => void;
 }
 
 /**
@@ -85,6 +74,8 @@ export class Agent<TState = unknown> {
   private _triggerFireCount: Map<string, number> = new Map<string, number>();
   private _sortedTriggersCache: Trigger<TState>[] | null = null;
   private _scheduleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private _scheduleControllers = new Map<string, ScheduleController>();
+  private _delayWaiters = new Map<string, Set<DelayWaiter>>();
 
   /**
    * Create a new Agent instance
@@ -244,11 +235,9 @@ export class Agent<TState = unknown> {
     this._triggerFireCount.delete(id);
     this._invalidateSortedTriggers();
 
-    const timer = this._scheduleTimers.get(id);
-    if (timer) {
-      clearTimeout(timer);
-      this._scheduleTimers.delete(id);
-    }
+    this._stopScheduledTrigger(id, true);
+    this._scheduleControllers.delete(id);
+    this._cancelDelayWaiters(id);
 
     // Clean up from event tracking maps
     this._eventLastSeenByTrigger.forEach((triggerMap) => {
@@ -272,10 +261,9 @@ export class Agent<TState = unknown> {
    * ```
    */
   clearTriggers(): void {
-    for (const timer of this._scheduleTimers.values()) {
-      clearTimeout(timer);
-    }
-    this._scheduleTimers.clear();
+    this._stopAllScheduledTriggers(true);
+    this._scheduleControllers.clear();
+    this._cancelAllDelayWaiters();
     this._triggers.clear();
     this._eventTriggers.clear();
     this._eventLastSeenByTrigger.clear();
@@ -397,11 +385,10 @@ export class Agent<TState = unknown> {
       this._status = AgentStatusEnum.Running;
       this._shouldRun = true;
       this._stateChanged = true; // Evaluate triggers immediately on start
-      this._triggerIdCounter = 0;
       this._consecutiveQuietCycles = 0; // Reset quiet cycle counter
       this._eventEmissionCount.clear();
       this._eventLastSeenByTrigger.clear();
-      this._eventTriggers.clear();
+      this._startScheduledTriggers();
 
       // Start the execution loop (fire and forget)
       this._executionLoop = this._runExecutionLoop();
@@ -439,10 +426,8 @@ export class Agent<TState = unknown> {
       this._shouldRun = false;
 
       // Cancel any pending scheduled timers so they don't fire post-stop
-      for (const timer of this._scheduleTimers.values()) {
-        clearTimeout(timer);
-      }
-      this._scheduleTimers.clear();
+      this._stopAllScheduledTriggers(true);
+      this._cancelAllDelayWaiters();
 
       // Wake the execution loop so it can exit immediately
       this._wake();
@@ -523,6 +508,7 @@ export class Agent<TState = unknown> {
 
       this._status = AgentStatusEnum.Paused;
       this._shouldRun = false;
+      this._cancelAllDelayWaiters();
 
       // Wake the loop so it exits its current wait immediately
       this._wake();
@@ -613,9 +599,15 @@ export class Agent<TState = unknown> {
       });
     }
 
-    if (quietCycles <= 0) {
+    if (!Number.isInteger(quietCycles) || quietCycles <= 0) {
       throw new AgentError('quietCycles must be a positive integer', 'INVALID_ARGUMENT', {
         quietCycles,
+      });
+    }
+
+    if (!Number.isFinite(timeout) || timeout <= 0) {
+      throw new AgentError('timeout must be a positive finite number', 'INVALID_ARGUMENT', {
+        timeout,
       });
     }
 
@@ -770,6 +762,10 @@ export class Agent<TState = unknown> {
           this._checkSettleResolvers();
         }
 
+        if (!this._shouldRun) {
+          break;
+        }
+
         // Wait for next event or timeout (event-driven instead of fixed polling)
         await this._waitForNextCycle();
       } catch (error) {
@@ -796,6 +792,10 @@ export class Agent<TState = unknown> {
    */
   private async _checkAndExecuteTrigger(trigger: Trigger<TState>): Promise<void> {
     try {
+      if (!this._triggers.has(trigger.id)) {
+        return;
+      }
+
       // Skip disabled triggers without removing them
       if (this._disabledTriggers.has(trigger.id)) {
         return;
@@ -825,11 +825,24 @@ export class Agent<TState = unknown> {
         return; // Conditions failed, don't execute actions
       }
 
+      if (!this._shouldRun || !this._triggers.has(trigger.id)) {
+        return;
+      }
+
       // Handle delay before execution
       if (trigger.delay && trigger.delay > 0) {
-        await new Promise((resolve) => {
-          setTimeout(resolve, trigger.delay);
-        });
+        const completed = await this._waitForDelay(trigger.id, trigger.delay);
+        if (!completed) {
+          return;
+        }
+      }
+
+      if (
+        !this._shouldRun ||
+        !this._triggers.has(trigger.id) ||
+        this._disabledTriggers.has(trigger.id)
+      ) {
+        return;
       }
 
       // Execute all actions
@@ -896,6 +909,80 @@ export class Agent<TState = unknown> {
    */
   private _generateTriggerId(): string {
     return `__trigger_${++this._triggerIdCounter}`;
+  }
+
+  private _startScheduledTriggers(): void {
+    for (const controller of this._scheduleControllers.values()) {
+      controller.start();
+    }
+  }
+
+  private _stopScheduledTrigger(id: string, clearReady: boolean): void {
+    const controller = this._scheduleControllers.get(id);
+    if (controller) {
+      controller.stop(clearReady);
+      return;
+    }
+    const timer = this._scheduleTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this._scheduleTimers.delete(id);
+    }
+  }
+
+  private _stopAllScheduledTriggers(clearReady: boolean): void {
+    for (const controller of this._scheduleControllers.values()) {
+      controller.stop(clearReady);
+    }
+    this._scheduleTimers.clear();
+  }
+
+  private _waitForDelay(triggerId: string, delay: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const waiter: DelayWaiter = {
+        timer: setTimeout(() => {
+          this._removeDelayWaiter(triggerId, waiter);
+          resolve(true);
+        }, delay),
+        resolve,
+      };
+
+      let waiters = this._delayWaiters.get(triggerId);
+      if (!waiters) {
+        waiters = new Set();
+        this._delayWaiters.set(triggerId, waiters);
+      }
+      waiters.add(waiter);
+    });
+  }
+
+  private _removeDelayWaiter(triggerId: string, waiter: DelayWaiter): void {
+    const waiters = this._delayWaiters.get(triggerId);
+    if (!waiters) {
+      return;
+    }
+    waiters.delete(waiter);
+    if (waiters.size === 0) {
+      this._delayWaiters.delete(triggerId);
+    }
+  }
+
+  private _cancelDelayWaiters(triggerId: string): void {
+    const waiters = this._delayWaiters.get(triggerId);
+    if (!waiters) {
+      return;
+    }
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(false);
+    }
+    this._delayWaiters.delete(triggerId);
+  }
+
+  private _cancelAllDelayWaiters(): void {
+    for (const triggerId of Array.from(this._delayWaiters.keys())) {
+      this._cancelDelayWaiters(triggerId);
+    }
   }
 
   /**
@@ -1324,8 +1411,22 @@ export class Agent<TState = unknown> {
       return false;
     };
 
+    const stop = (clearReady: boolean): void => {
+      const timer = this._scheduleTimers.get(triggerId);
+      if (timer) {
+        clearTimeout(timer);
+        this._scheduleTimers.delete(triggerId);
+      }
+      if (clearReady) {
+        ready = false;
+      }
+    };
+
     const scheduleNext = (): void => {
       if (!this._triggers.has(triggerId)) {
+        return;
+      }
+      if (this._scheduleTimers.has(triggerId)) {
         return;
       }
       const ms = msUntil(nextOccurrence(timeOfDay));
@@ -1353,7 +1454,10 @@ export class Agent<TState = unknown> {
       priority: options?.priority,
       maxFires: options?.maxFires,
     });
-    scheduleNext();
+    this._scheduleControllers.set(triggerId, { start: scheduleNext, stop });
+    if (this.isRunning() || this.isPaused()) {
+      scheduleNext();
+    }
     return triggerId;
   }
 
@@ -1410,8 +1514,22 @@ export class Agent<TState = unknown> {
       return false;
     };
 
+    const stop = (clearReady: boolean): void => {
+      const timer = this._scheduleTimers.get(triggerId);
+      if (timer) {
+        clearTimeout(timer);
+        this._scheduleTimers.delete(triggerId);
+      }
+      if (clearReady) {
+        ready = false;
+      }
+    };
+
     const scheduleNext = (): void => {
       if (!this._triggers.has(triggerId)) {
+        return;
+      }
+      if (this._scheduleTimers.has(triggerId)) {
         return;
       }
       const timer = setTimeout(() => {
@@ -1436,7 +1554,10 @@ export class Agent<TState = unknown> {
       priority: options?.priority,
       maxFires: options?.maxFires,
     });
-    scheduleNext();
+    this._scheduleControllers.set(triggerId, { start: scheduleNext, stop });
+    if (this.isRunning() || this.isPaused()) {
+      scheduleNext();
+    }
 
     if (options?.immediate === true) {
       ready = true;

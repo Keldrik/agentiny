@@ -120,6 +120,8 @@ await agent.settle();
 
 `every(interval, ...)` fires repeatedly on a fixed interval. The interval is
 either milliseconds or a duration string (`ms`, `s`, `m`, `h`).
+Timers start when the agent is running. If a schedule is registered while idle
+or stopped, it begins on the next `start()`.
 
 ```typescript
 agent.every('2h', [refreshFeed]);
@@ -346,6 +348,8 @@ const agent = new Agent({
 - `settle()` requires the agent to be running.
 - Disabled triggers remain registered and can be re-enabled.
 - Event triggers created with `on()` are normal triggers and can be removed with `off()`.
+- Scheduled triggers registered with `at()` and `every()` keep their trigger IDs across stop/start.
+- While paused, scheduled timers may continue ticking, but actions do not run until resume.
 - `idleTimeout` controls how often the loop wakes when there is no work. The default is `100ms`.
 
 ## License

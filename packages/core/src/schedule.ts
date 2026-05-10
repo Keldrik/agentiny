@@ -1,4 +1,4 @@
-import { AgentError } from './agent';
+import { AgentError } from './errors';
 
 /**
  * A wall-clock time of day in local time.

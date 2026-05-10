@@ -259,7 +259,7 @@ describe('Agent', () => {
       await expect(agent.stop()).rejects.toThrow(AgentError);
     });
 
-    it('should reset trigger ID counter on start', async () => {
+    it('should keep generated trigger IDs unique across start/stop cycles', async () => {
       const testAgent = new Agent<{ count: number }>();
       const id1 = testAgent.when(() => true, [() => {}]);
       const id2 = testAgent.when(() => true, [() => {}]);
@@ -277,7 +277,18 @@ describe('Agent', () => {
       const newId = testAgent.when(() => true, [() => {}]);
       const newCounter = parseInt(newId.replace('__trigger_', ''), 10);
 
-      expect(newCounter).toBe(1);
+      expect(newCounter).toBe(secondCounter + 1);
+    });
+
+    it('should not collide with generated triggers created before start', async () => {
+      const action = vi.fn();
+      const preStartId = agent.when((state) => state.count > 0, [action]);
+
+      await agent.start();
+      const postStartId = agent.when((state) => state.count > 1, [action]);
+
+      expect(preStartId).toBe('__trigger_1');
+      expect(postStartId).toBe('__trigger_2');
     });
   });
 
@@ -539,6 +550,24 @@ describe('Agent', () => {
 
       expect(action1).toHaveBeenCalled();
       expect(action2).toHaveBeenCalled();
+    });
+
+    it('should preserve event trigger metadata after start', async () => {
+      const action = vi.fn();
+      const id = agent.on('save', [action]);
+
+      expect(agent.getEventTriggersForEvent('save').map((trigger) => trigger.id)).toEqual([id]);
+
+      await agent.start();
+
+      expect(agent.getEventTriggersForEvent('save').map((trigger) => trigger.id)).toEqual([id]);
+
+      agent.removeAllEventTriggersForEvent('save');
+      agent.emitEvent('save');
+      await agent.settle();
+
+      expect(action).not.toHaveBeenCalled();
+      expect(agent.getEventTriggersForEvent('save')).toEqual([]);
     });
   });
 
@@ -896,6 +925,60 @@ describe('Agent', () => {
       const elapsedTime = Date.now() - startTime;
       expect(action).toHaveBeenCalled();
       expect(elapsedTime).toBeGreaterThanOrEqual(50);
+    });
+
+    it('should cancel delayed action execution on stop', async () => {
+      const action = vi.fn();
+      let delayStarted!: () => void;
+      const delayStartedPromise = new Promise<void>((resolve) => {
+        delayStarted = resolve;
+      });
+
+      agent.addTrigger({
+        id: 'delayed-stop-trigger',
+        check: (state) => {
+          if (state.count > 0) {
+            delayStarted();
+          }
+          return state.count > 0;
+        },
+        actions: [action],
+        delay: 100,
+      });
+
+      await agent.start();
+      agent.setState({ count: 1 });
+      await delayStartedPromise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const stopStartedAt = Date.now();
+      await agent.stop();
+      const stopElapsed = Date.now() - stopStartedAt;
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      expect(stopElapsed).toBeLessThan(80);
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('should cancel delayed action execution when the trigger is removed', async () => {
+      const action = vi.fn();
+
+      agent.addTrigger({
+        id: 'delayed-remove-trigger',
+        check: (state) => state.count > 0,
+        actions: [action],
+        delay: 100,
+      });
+
+      await agent.start();
+      agent.setState({ count: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      agent.removeTrigger('delayed-remove-trigger');
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      expect(action).not.toHaveBeenCalled();
     });
   });
 
@@ -1350,6 +1433,28 @@ describe('Agent', () => {
       it('should throw AgentError if quietCycles is negative', async () => {
         await agent.start();
         expect(() => agent.settle(-1)).toThrow(AgentError);
+        await agent.stop();
+      });
+
+      it('should throw AgentError if quietCycles is not a positive integer', async () => {
+        await agent.start();
+        expect(() => agent.settle(1.5)).toThrowError(
+          expect.objectContaining({ code: 'INVALID_ARGUMENT' }),
+        );
+        expect(() => agent.settle(Number.NaN)).toThrowError(
+          expect.objectContaining({ code: 'INVALID_ARGUMENT' }),
+        );
+        await agent.stop();
+      });
+
+      it('should throw AgentError if timeout is not a positive finite number', async () => {
+        await agent.start();
+        expect(() => agent.settle(1, 0)).toThrowError(
+          expect.objectContaining({ code: 'INVALID_ARGUMENT' }),
+        );
+        expect(() => agent.settle(1, Number.POSITIVE_INFINITY)).toThrowError(
+          expect.objectContaining({ code: 'INVALID_ARGUMENT' }),
+        );
         await agent.stop();
       });
 
@@ -2224,6 +2329,35 @@ describe('Agent', () => {
 
       expect(a.getState().step).toBe('done');
     });
+
+    it('should not execute a trigger removed earlier in the same evaluation pass', async () => {
+      const removedAction = vi.fn();
+      agent.addTrigger({
+        id: 'remover',
+        priority: 10,
+        repeat: false,
+        check: (state) => state.count > 0,
+        actions: [
+          () => {
+            agent.removeTrigger('removed-before-run');
+          },
+        ],
+      });
+      agent.addTrigger({
+        id: 'removed-before-run',
+        priority: 0,
+        check: (state) => state.count > 0,
+        actions: [removedAction],
+      });
+
+      await agent.start();
+      await agent.settle();
+      agent.setState({ count: 1 });
+      await agent.settle();
+
+      expect(removedAction).not.toHaveBeenCalled();
+      expect(agent.getTrigger('removed-before-run')).toBeUndefined();
+    });
   });
 
   // ─── reset() ─────────────────────────────────────────────────────────────────
@@ -2366,6 +2500,18 @@ describe('Agent', () => {
       expect(action).toHaveBeenCalledTimes(3);
     });
 
+    it('does not start interval timers before the agent starts', async () => {
+      const action = vi.fn();
+      scheduleAgent.every(1000, [action]);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(action).not.toHaveBeenCalled();
+
+      await scheduleAgent.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
     it('parses string intervals like "500ms" and "2s"', async () => {
       const action = vi.fn();
       const slow = vi.fn();
@@ -2454,6 +2600,38 @@ describe('Agent', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(action).not.toHaveBeenCalled();
     });
+
+    it('restarts interval timers after stop and start', async () => {
+      const action = vi.fn();
+      scheduleAgent.every(100, [action]);
+      await scheduleAgent.start();
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(action).toHaveBeenCalledTimes(1);
+
+      await scheduleAgent.stop();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(action).toHaveBeenCalledTimes(1);
+
+      await scheduleAgent.start();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(action).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps interval timers while paused and collapses missed ticks to one fire on resume', async () => {
+      const action = vi.fn();
+      scheduleAgent.every(100, [action]);
+      await scheduleAgent.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await scheduleAgent.pause();
+
+      await vi.advanceTimersByTimeAsync(350);
+      expect(action).not.toHaveBeenCalled();
+
+      await scheduleAgent.resume();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(action).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('at()', () => {
@@ -2483,6 +2661,18 @@ describe('Agent', () => {
       await scheduleAgent.start();
 
       // 11h30m until 21:30
+      await vi.advanceTimersByTimeAsync(11 * 60 * 60 * 1000 + 30 * 60 * 1000);
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not start wall-clock timers before the agent starts', async () => {
+      const action = vi.fn();
+      scheduleAgent.at('21:30', [action]);
+
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      expect(action).not.toHaveBeenCalled();
+
+      await scheduleAgent.start();
       await vi.advanceTimersByTimeAsync(11 * 60 * 60 * 1000 + 30 * 60 * 1000);
       expect(action).toHaveBeenCalledTimes(1);
     });

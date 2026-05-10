@@ -11,13 +11,13 @@ export interface ConditionResult {
  * This function sequentially evaluates all conditions, supporting both synchronous and
  * asynchronous condition functions. It short-circuits on the first failing condition,
  * meaning subsequent conditions are not evaluated if an earlier one returns false or
- * throws an error. If any condition throws an error, the function returns false without
- * propagating the error.
+ * throws an error. If any condition throws an error, the function returns a failed
+ * result with the collected error instead of propagating it.
  *
  * @template TState - The type of the state object
  * @param conditions - Array of condition functions to evaluate
  * @param state - The current state to pass to each condition function
- * @returns A promise that resolves to true if all conditions pass, false otherwise
+ * @returns A promise that resolves to a ConditionResult with pass/fail status and errors
  *
  * @example
  * ```typescript
@@ -26,7 +26,7 @@ export interface ConditionResult {
  *   (state) => state.count < 100,
  * ];
  * const result = await evaluateConditions(conditions, { count: 50 });
- * // result === true
+ * // result.passed === true
  * ```
  *
  * @example
@@ -40,6 +40,7 @@ export interface ConditionResult {
  *   (state) => state.status === 'active',
  * ];
  * const result = await evaluateConditions(conditions, state);
+ * // result.passed === true when both conditions pass
  * ```
  *
  * @example
