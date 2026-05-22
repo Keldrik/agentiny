@@ -42,6 +42,49 @@ describe('State', () => {
     });
   });
 
+  describe('reference-equality short-circuit', () => {
+    it('should not notify when setting the exact same reference', () => {
+      const callback = vi.fn();
+      state.subscribe(callback);
+
+      const current = state.get();
+      state.set(current);
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it('should notify for a distinct but deep-equal object', () => {
+      const callback = vi.fn();
+      state.subscribe(callback);
+
+      // Same shape/values as initial { value: 0 } but a new reference.
+      state.set({ value: 0 });
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith({ value: 0 });
+    });
+
+    it('should not notify when setting an identical primitive value', () => {
+      const numberState = new State(42);
+      const callback = vi.fn();
+      numberState.subscribe(callback);
+
+      numberState.set(42);
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it('should treat NaN as unchanged (Object.is, not ===)', () => {
+      const nanState = new State(Number.NaN);
+      const callback = vi.fn();
+      nanState.subscribe(callback);
+
+      nanState.set(Number.NaN);
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+  });
+
   describe('subscribe', () => {
     it('should call subscriber on state change', () => {
       const callback = vi.fn();

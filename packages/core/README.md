@@ -116,6 +116,13 @@ agent.emitEvent('saved');
 await agent.settle();
 ```
 
+`emitEvent` is a coalesced wake signal, not a queue. Multiple
+`emitEvent('foo')` calls before the next cycle fire each matching trigger
+once, not once per call — if you need per-message delivery, model the count
+in state. A pending emission is consumed only after the trigger's conditions
+pass, so a failing condition leaves the emission armed until conditions are
+satisfied on a later cycle or the trigger is removed.
+
 ### Time-Based Triggers
 
 `every(interval, ...)` fires repeatedly on a fixed interval. The interval is

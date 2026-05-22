@@ -28,6 +28,25 @@ describe('Agent', () => {
       expect(agent.getStatus()).toBe('idle');
     });
 
+    it('should reject invalid idleTimeout values', () => {
+      for (const idleTimeout of [
+        0,
+        -1,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+      ]) {
+        expect(() => {
+          new Agent({ initialState: { count: 0 }, idleTimeout });
+        }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+      }
+    });
+
+    it('should accept a positive finite idleTimeout and undefined', () => {
+      expect(() => new Agent({ initialState: { count: 0 }, idleTimeout: 50 })).not.toThrow();
+      expect(() => new Agent({ initialState: { count: 0 } })).not.toThrow();
+    });
+
     it('should not be running initially', () => {
       expect(agent.isRunning()).toBe(false);
     });
@@ -140,6 +159,100 @@ describe('Agent', () => {
       }
     });
 
+    it('should reject an empty-string id', () => {
+      expect(() => {
+        agent.addTrigger({ id: '', check: () => true, actions: [] });
+      }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    });
+
+    it('should reject a non-string id', () => {
+      expect(() => {
+        // @ts-expect-error testing JS-consumer misuse
+        agent.addTrigger({ id: 123, check: () => true, actions: [] });
+      }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    });
+
+    it('should reject a non-function check', () => {
+      expect(() => {
+        // @ts-expect-error testing JS-consumer misuse
+        agent.addTrigger({ id: 'bad-check', check: 'nope', actions: [] });
+      }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    });
+
+    it('should reject non-array actions', () => {
+      expect(() => {
+        // @ts-expect-error testing JS-consumer misuse
+        agent.addTrigger({ id: 'bad-actions', check: () => true, actions: 'nope' });
+      }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    });
+
+    it('should reject actions containing a non-function element', () => {
+      expect(() => {
+        agent.addTrigger({
+          id: 'bad-action-el',
+          check: () => true,
+          // @ts-expect-error testing JS-consumer misuse
+          actions: [() => {}, 'nope'],
+        });
+      }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    });
+
+    it('should reject non-array conditions', () => {
+      expect(() => {
+        agent.addTrigger({
+          id: 'bad-conditions',
+          check: () => true,
+          // @ts-expect-error testing JS-consumer misuse
+          conditions: 'nope',
+          actions: [],
+        });
+      }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    });
+
+    it('should reject conditions containing a non-function element', () => {
+      expect(() => {
+        agent.addTrigger({
+          id: 'bad-condition-el',
+          check: () => true,
+          // @ts-expect-error testing JS-consumer misuse
+          conditions: [() => true, 42],
+          actions: [],
+        });
+      }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    });
+
+    it('should reject invalid delay values', () => {
+      for (const delay of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(() => {
+          agent.addTrigger({
+            id: `bad-delay-${String(delay)}`,
+            check: () => true,
+            actions: [],
+            delay,
+          });
+        }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+      }
+    });
+
+    it('should accept delay of 0', () => {
+      expect(() => {
+        agent.addTrigger({ id: 'zero-delay', check: () => true, actions: [], delay: 0 });
+      }).not.toThrow();
+    });
+
+    it('should reject invalid priority values', () => {
+      for (const priority of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        expect(() => {
+          agent.addTrigger({
+            id: `bad-priority-${String(priority)}`,
+            check: () => true,
+            actions: [],
+            priority,
+          });
+        }).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+      }
+    });
+
     it('should get trigger by ID', () => {
       const checkFn = () => true;
       agent.addTrigger({
@@ -218,6 +331,32 @@ describe('Agent', () => {
       expect(agent.getEventTriggers().size).toBe(0);
       expect(agent.getEventTriggersForEvent('event1')).toEqual([]);
       expect(agent.getEventTriggersForEvent('event2')).toEqual([]);
+    });
+
+    it('should evaluate a trigger added while running when state already matches', async () => {
+      agent.setState({ count: 10 });
+      await agent.start();
+
+      const action = vi.fn();
+      // Current state (count: 10) already satisfies this check; it must fire
+      // without any further setState.
+      agent.when((state) => state.count > 5, [action]);
+
+      await agent.settle();
+      expect(action).toHaveBeenCalled();
+    });
+
+    it('should evaluate a trigger added while paused after resume when state matches', async () => {
+      agent.setState({ count: 10 });
+      await agent.start();
+      await agent.pause();
+
+      const action = vi.fn();
+      agent.when((state) => state.count > 5, [action]);
+
+      await agent.resume();
+      await agent.settle();
+      expect(action).toHaveBeenCalled();
     });
   });
 
@@ -511,6 +650,131 @@ describe('Agent', () => {
       expect(action).not.toHaveBeenCalled();
     });
 
+    it('coalesces multiple emissions between cycles into a single fire', async () => {
+      const action = vi.fn();
+      agent.on('save', [action]);
+
+      await agent.start();
+      agent.emitEvent('save');
+      agent.emitEvent('save');
+      agent.emitEvent('save');
+      await agent.settle();
+      await agent.stop();
+
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the emission pending when conditions fail and fires later when they pass', async () => {
+      const stateAgent = new Agent<{ ready: boolean }>({ initialState: { ready: false } });
+      const action = vi.fn();
+
+      stateAgent.on('save', [(s) => s.ready], [action]);
+
+      await stateAgent.start();
+      stateAgent.emitEvent('save');
+      await stateAgent.settle();
+      expect(action).not.toHaveBeenCalled();
+
+      stateAgent.setState({ ready: true });
+      await stateAgent.settle();
+      await stateAgent.stop();
+
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops event bookkeeping when the last listener for an event is removed', () => {
+      const internals = agent as unknown as {
+        _eventEmissionCount: Map<string, number>;
+        _eventLastSeenByTrigger: Map<string, Map<string, number>>;
+        _eventTriggers: Map<string, Set<string>>;
+      };
+
+      const id = agent.on('ephemeral', [vi.fn()]);
+      agent.emitEvent('ephemeral');
+      expect(internals._eventEmissionCount.has('ephemeral')).toBe(true);
+
+      agent.off(id);
+      expect(internals._eventEmissionCount.has('ephemeral')).toBe(false);
+      expect(internals._eventLastSeenByTrigger.has('ephemeral')).toBe(false);
+      expect(internals._eventTriggers.has('ephemeral')).toBe(false);
+    });
+
+    it('keeps event bookkeeping while at least one listener remains', () => {
+      const internals = agent as unknown as { _eventEmissionCount: Map<string, number> };
+
+      const id1 = agent.on('shared', [vi.fn()]);
+      agent.on('shared', [vi.fn()]);
+      agent.emitEvent('shared');
+
+      agent.off(id1);
+      expect(internals._eventEmissionCount.has('shared')).toBe(true);
+    });
+
+    it('clearTriggers() resets _eventEmissionCount', () => {
+      const internals = agent as unknown as { _eventEmissionCount: Map<string, number> };
+
+      agent.on('a', [vi.fn()]);
+      agent.on('b', [vi.fn()]);
+      agent.emitEvent('a');
+      agent.emitEvent('b');
+      expect(internals._eventEmissionCount.size).toBe(2);
+
+      agent.clearTriggers();
+      expect(internals._eventEmissionCount.size).toBe(0);
+    });
+
+    it('emitEvent is a no-op when no listener is registered for the event', async () => {
+      const internals = agent as unknown as { _eventEmissionCount: Map<string, number> };
+
+      await agent.start();
+      for (let i = 0; i < 100; i++) {
+        agent.emitEvent(`nobody-listens-${i}`);
+      }
+      await agent.stop();
+
+      expect(internals._eventEmissionCount.size).toBe(0);
+    });
+
+    it('re-registering a listener after removal starts from a clean slate', async () => {
+      const action = vi.fn();
+
+      const id1 = agent.on('save', [action]);
+      await agent.start();
+      agent.emitEvent('save');
+      await agent.settle();
+      expect(action).toHaveBeenCalledTimes(1);
+
+      agent.off(id1);
+      agent.on('save', [action]);
+      agent.emitEvent('save');
+      await agent.settle();
+      await agent.stop();
+
+      expect(action).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not re-fire after a pending emission has been consumed', async () => {
+      const stateAgent = new Agent<{ ready: boolean }>({ initialState: { ready: false } });
+      const action = vi.fn();
+
+      stateAgent.on('save', [(s) => s.ready], [action]);
+
+      await stateAgent.start();
+      stateAgent.emitEvent('save');
+      await stateAgent.settle();
+
+      stateAgent.setState({ ready: true });
+      await stateAgent.settle();
+      expect(action).toHaveBeenCalledTimes(1);
+
+      stateAgent.setState({ ready: false });
+      stateAgent.setState({ ready: true });
+      await stateAgent.settle();
+      await stateAgent.stop();
+
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
     it('should support one-time event trigger', async () => {
       const action = vi.fn();
 
@@ -591,6 +855,30 @@ describe('Agent', () => {
       expect(() => {
         agent.removeEventTrigger('save', 'non-existent');
       }).toThrow(AgentError);
+    });
+
+    it('should throw when the id is registered for a different event', async () => {
+      const action = vi.fn();
+      const id = agent.on('save', [action]);
+
+      expect(() => {
+        agent.removeEventTrigger('other-event', id);
+      }).toThrowError(expect.objectContaining({ code: 'TRIGGER_NOT_FOUND' }));
+
+      // The trigger must remain registered and still fire for its real event.
+      await agent.start();
+      agent.emitEvent('save');
+      await agent.settle();
+      await agent.stop();
+      expect(action).toHaveBeenCalled();
+    });
+
+    it('should throw when given a non-event trigger id', () => {
+      const id = agent.when((state) => state.count > 0, [vi.fn()]);
+
+      expect(() => {
+        agent.removeEventTrigger('save', id);
+      }).toThrowError(expect.objectContaining({ code: 'TRIGGER_NOT_FOUND' }));
     });
   });
 
@@ -2773,6 +3061,57 @@ describe('Agent', () => {
 
       await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
       expect(action).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('idle timeout cleanup', () => {
+    let timerAgent: Agent<{ count: number }>;
+
+    beforeEach(() => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+      });
+      timerAgent = new Agent({
+        initialState: { count: 0 },
+        idleTimeout: 60_000,
+      });
+    });
+
+    afterEach(async () => {
+      if (timerAgent.isRunning() || timerAgent.isPaused()) {
+        await timerAgent.stop();
+      }
+      vi.useRealTimers();
+    });
+
+    it('clears the idle setTimeout on stop()', async () => {
+      await timerAgent.start();
+      // Let the loop reach _waitForNextCycle() and schedule its idle timer.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      await timerAgent.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('clears the idle setTimeout on pause()', async () => {
+      await timerAgent.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      await timerAgent.pause();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('does not accumulate idle timers under rapid wakes', async () => {
+      await timerAgent.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      for (let i = 1; i <= 20; i++) {
+        timerAgent.setState({ count: i });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
+      }
     });
   });
 });

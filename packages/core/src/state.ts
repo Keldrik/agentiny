@@ -36,11 +36,19 @@ export class State<T> {
   }
 
   /**
-   * Set a new state value and notify subscribers
+   * Set a new state value and notify subscribers.
+   *
+   * Uses `Object.is` reference equality to short-circuit: setting the exact
+   * same value (same reference for objects) is a no-op and does not notify
+   * subscribers. Pass a new reference (e.g. via `setState`/`updateState`) to
+   * signal a change.
    *
    * @param value - New state value
    */
   set(value: T): void {
+    if (Object.is(this._value, value)) {
+      return;
+    }
     this._value = value;
     this._notify();
   }

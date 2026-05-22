@@ -64,10 +64,12 @@ export class Agent<TState = unknown> {
   private _eventEmissionCount = new Map<string, number>();
   private _eventLastSeenByTrigger = new Map<string, Map<string, number>>();
   private _eventTriggers = new Map<string, Set<string>>();
+  private _eventTriggerConsumers = new Map<string, () => void>();
   private _triggerIdCounter = 0;
   private _consecutiveQuietCycles = 0;
   private _settleResolvers: SettleResolver[] = [];
   private _wakeResolve: (() => void) | null = null;
+  private _idleTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private _idleTimeout: number;
   private _initialState: TState | undefined;
   private _disabledTriggers: Set<string> = new Set<string>();
@@ -88,6 +90,14 @@ export class Agent<TState = unknown> {
     this._triggers = new Map();
     this._status = AgentStatusEnum.Idle;
     this._onError = config.onError;
+    if (
+      config.idleTimeout !== undefined &&
+      (!Number.isFinite(config.idleTimeout) || config.idleTimeout <= 0)
+    ) {
+      throw new AgentError('idleTimeout must be a positive finite number', 'INVALID_ARGUMENT', {
+        idleTimeout: config.idleTimeout,
+      });
+    }
     this._idleTimeout = config.idleTimeout ?? 100;
     this._initialState = config.initialState;
 
@@ -175,9 +185,46 @@ export class Agent<TState = unknown> {
    * ```
    */
   addTrigger(trigger: Trigger<TState>): string {
+    // Validate id first — the duplicate check below keys on it.
+    if (typeof trigger.id !== 'string' || trigger.id.length === 0) {
+      throw new AgentError('Trigger id must be a non-empty string', 'INVALID_ARGUMENT', {
+        triggerId: trigger.id,
+      });
+    }
     if (this._triggers.has(trigger.id)) {
       throw new AgentError(`Trigger with id "${trigger.id}" already exists`, 'DUPLICATE_TRIGGER', {
         triggerId: trigger.id,
+      });
+    }
+    if (typeof trigger.check !== 'function') {
+      throw new AgentError('Trigger check must be a function', 'INVALID_ARGUMENT', {
+        triggerId: trigger.id,
+      });
+    }
+    if (!Array.isArray(trigger.actions) || trigger.actions.some((a) => typeof a !== 'function')) {
+      throw new AgentError('Trigger actions must be an array of functions', 'INVALID_ARGUMENT', {
+        triggerId: trigger.id,
+      });
+    }
+    if (
+      trigger.conditions !== undefined &&
+      (!Array.isArray(trigger.conditions) ||
+        trigger.conditions.some((c) => typeof c !== 'function'))
+    ) {
+      throw new AgentError('Trigger conditions must be an array of functions', 'INVALID_ARGUMENT', {
+        triggerId: trigger.id,
+      });
+    }
+    if (trigger.delay !== undefined && (!Number.isFinite(trigger.delay) || trigger.delay < 0)) {
+      throw new AgentError('delay must be a non-negative finite number', 'INVALID_ARGUMENT', {
+        triggerId: trigger.id,
+        delay: trigger.delay,
+      });
+    }
+    if (trigger.priority !== undefined && !Number.isFinite(trigger.priority)) {
+      throw new AgentError('priority must be a finite number', 'INVALID_ARGUMENT', {
+        triggerId: trigger.id,
+        priority: trigger.priority,
       });
     }
     if (
@@ -191,6 +238,10 @@ export class Agent<TState = unknown> {
     }
     this._triggers.set(trigger.id, trigger);
     this._invalidateSortedTriggers();
+    if (this.isRunning()) {
+      this._stateChanged = true;
+      this._wake();
+    }
     return trigger.id;
   }
 
@@ -245,11 +296,15 @@ export class Agent<TState = unknown> {
     });
     for (const [event, triggerIds] of this._eventTriggers.entries()) {
       triggerIds.delete(id);
-      // Clean up empty entries
+      // When the last listener for an event is gone, drop the event's
+      // bookkeeping entirely so unique event names cannot accumulate.
       if (triggerIds.size === 0) {
         this._eventTriggers.delete(event);
+        this._eventEmissionCount.delete(event);
+        this._eventLastSeenByTrigger.delete(event);
       }
     }
+    this._eventTriggerConsumers.delete(id);
   }
 
   /**
@@ -266,7 +321,9 @@ export class Agent<TState = unknown> {
     this._cancelAllDelayWaiters();
     this._triggers.clear();
     this._eventTriggers.clear();
+    this._eventEmissionCount.clear();
     this._eventLastSeenByTrigger.clear();
+    this._eventTriggerConsumers.clear();
     this._disabledTriggers.clear();
     this._triggerFireCount.clear();
     this._invalidateSortedTriggers();
@@ -669,6 +726,10 @@ export class Agent<TState = unknown> {
    * evaluation instead of waiting for the next timeout.
    */
   private _wake(): void {
+    if (this._idleTimeoutId !== null) {
+      clearTimeout(this._idleTimeoutId);
+      this._idleTimeoutId = null;
+    }
     if (this._wakeResolve) {
       const resolve = this._wakeResolve;
       this._wakeResolve = null;
@@ -705,7 +766,10 @@ export class Agent<TState = unknown> {
     const timeout = hasSettleWaiters ? pollInterval : this._idleTimeout;
 
     const timeoutPromise = new Promise<void>((resolve) => {
-      setTimeout(resolve, timeout);
+      this._idleTimeoutId = setTimeout(() => {
+        this._idleTimeoutId = null;
+        resolve();
+      }, timeout);
     });
 
     return Promise.race([wakePromise, timeoutPromise]);
@@ -828,6 +892,11 @@ export class Agent<TState = unknown> {
       if (!this._shouldRun || !this._triggers.has(trigger.id)) {
         return;
       }
+
+      // Consume any pending event emission for this trigger now that we have
+      // committed to firing. Until this point a failing condition would have
+      // left the emission pending for a future cycle.
+      this._eventTriggerConsumers.get(trigger.id)?.();
 
       // Handle delay before execution
       if (trigger.delay && trigger.delay > 0) {
@@ -988,9 +1057,17 @@ export class Agent<TState = unknown> {
   /**
    * Emit an event that triggers all event-based listeners
    *
-   * When an event is emitted, all registered event-based triggers for that event
-   * will fire once on the next polling cycle (within 10ms). Multiple triggers
-   * listening to the same event will all see the same emission.
+   * Event emissions are coalesced wake signals, not a queue. Multiple
+   * `emitEvent('foo')` calls before the loop processes them fire each
+   * matching trigger **once**, not once per call. If you need per-message
+   * delivery, encode the count in state via `setState`.
+   *
+   * If a trigger's conditions fail on the cycle that processes the emission,
+   * the emission remains pending for that trigger; it will be re-evaluated
+   * on subsequent wake-ups and fire when the conditions are satisfied (or
+   * be dropped if the trigger is removed first).
+   *
+   * If no trigger is currently listening for the event, the call is a no-op.
    *
    * @param event - The event name to emit
    *
@@ -1000,6 +1077,13 @@ export class Agent<TState = unknown> {
    * ```
    */
   emitEvent(event: string): void {
+    // If no trigger is currently listening to this event there is nothing to
+    // evaluate; skip both the counter bump (which would otherwise accumulate
+    // entries for dynamically-named events) and the wake.
+    const listeners = this._eventTriggers.get(event);
+    if (!listeners || listeners.size === 0) {
+      return;
+    }
     const currentCount = this._eventEmissionCount.get(event) ?? 0;
     this._eventEmissionCount.set(event, currentCount + 1);
     // Signal that triggers should be evaluated for this event emission
@@ -1012,6 +1096,11 @@ export class Agent<TState = unknown> {
    *
    * This creates a trigger that fires when a specific event is emitted via emitEvent().
    * Supports optional conditions that must all pass before executing actions.
+   *
+   * Delivery semantics: emissions are coalesced wake signals. Several
+   * `emitEvent(event)` calls between two cycles fire this trigger at most
+   * once. A pending emission is consumed only after `conditions` pass, so a
+   * failing condition leaves the emission armed for a later cycle.
    *
    * @template TState - The type of the agent's state
    * @param event - The event name to listen for
@@ -1056,32 +1145,36 @@ export class Agent<TState = unknown> {
       repeat = repeatOptional ?? true;
     }
 
-    // Register trigger with event-based check
+    // Event triggers use coalesced wake-signal semantics: the trigger fires
+    // once per cycle in which at least one new emission is pending. The
+    // emission is only "consumed" (lastSeen advanced) after conditions pass,
+    // so a failing condition leaves the emission pending until conditions are
+    // satisfied on a later cycle or the trigger is removed.
+    const getTriggerEventMap = (): Map<string, number> => {
+      let triggerEventMap = this._eventLastSeenByTrigger.get(event);
+      if (!triggerEventMap) {
+        triggerEventMap = new Map();
+        this._eventLastSeenByTrigger.set(event, triggerEventMap);
+      }
+      return triggerEventMap;
+    };
+
     const trigger: Trigger<TState> = {
       id: triggerId,
       check: (): boolean => {
         const currentEmissionCount = this._eventEmissionCount.get(event) ?? 0;
-
-        // Get the last emission count this trigger saw for this event
-        let triggerEventMap = this._eventLastSeenByTrigger.get(event);
-        if (!triggerEventMap) {
-          triggerEventMap = new Map();
-          this._eventLastSeenByTrigger.set(event, triggerEventMap);
-        }
-        const lastSeenCount = triggerEventMap.get(triggerId) ?? 0;
-
-        // Check if there's a new emission
-        if (currentEmissionCount > lastSeenCount) {
-          // Update the last seen count for this trigger
-          triggerEventMap.set(triggerId, currentEmissionCount);
-          return true;
-        }
-        return false;
+        const lastSeenCount = this._eventLastSeenByTrigger.get(event)?.get(triggerId) ?? 0;
+        return currentEmissionCount > lastSeenCount;
       },
       conditions,
       actions,
       repeat,
     };
+
+    this._eventTriggerConsumers.set(triggerId, () => {
+      const currentEmissionCount = this._eventEmissionCount.get(event) ?? 0;
+      getTriggerEventMap().set(triggerId, currentEmissionCount);
+    });
 
     this.addTrigger(trigger);
 
@@ -1103,7 +1196,7 @@ export class Agent<TState = unknown> {
    *
    * @param event - The event name the trigger was listening to
    * @param triggerId - The trigger ID returned from `on()`
-   * @throws {AgentError} If no trigger with the given ID exists
+   * @throws {AgentError} If `triggerId` is not registered for `event`
    *
    * @example
    * ```typescript
@@ -1112,8 +1205,15 @@ export class Agent<TState = unknown> {
    * agent.removeEventTrigger('save', id);
    * ```
    */
-  removeEventTrigger(_event: string, triggerId: string): void {
-    // event parameter kept for API clarity, even though it's not used internally
+  removeEventTrigger(event: string, triggerId: string): void {
+    const listeners = this._eventTriggers.get(event);
+    if (!listeners || !listeners.has(triggerId)) {
+      throw new AgentError(
+        `Trigger "${triggerId}" is not registered for event "${event}"`,
+        'TRIGGER_NOT_FOUND',
+        { event, triggerId },
+      );
+    }
     this.removeTrigger(triggerId);
   }
 
