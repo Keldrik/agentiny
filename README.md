@@ -103,6 +103,7 @@ agent.when((state) => state.userInput.length > 0, [aiAction]);
 - **Conditions** add extra guards before actions run.
 - **Actions** mutate state or perform side effects.
 - **`settle()`** waits for cascading trigger/action chains to finish.
+- **`waitFor(predicate)`** resolves with the state once a specific condition is met.
 
 ## Documentation
 

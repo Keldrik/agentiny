@@ -123,6 +123,31 @@ in state. A pending emission is consumed only after the trigger's conditions
 pass, so a failing condition leaves the emission armed until conditions are
 satisfied on a later cycle or the trigger is removed.
 
+### Wait For A Condition
+
+`waitFor(predicate, timeout?)` returns a promise that resolves with the state the
+moment a synchronous predicate first becomes true. Where `settle()` waits for the
+whole system to go quiet, `waitFor()` waits for one specific condition.
+
+```typescript
+await agent.start();
+const ready = await agent.waitFor((state) => state.ready);
+console.log(ready); // the state that satisfied the predicate
+```
+
+Predicates are evaluated immediately when called, on every
+`setState()`/`updateState()` change (so they resolve with zero latency, even
+while idle or paused), and on every loop cycle while running (so in-place action
+mutations are observed too). The resolved value is the live state reference,
+consistent with `getState()` — it is not deep cloned.
+
+`waitFor()` is callable in any status, but without a running agent only
+`setState()`/`updateState()` changes can satisfy the predicate (trigger- and
+timer-driven changes require `start()`). It rejects with an `AgentError` coded
+`WAITFOR_TIMEOUT` if not satisfied within `timeout` (default `10000`ms), or
+`AGENT_STOPPED` if the agent is stopped while waiting. A predicate that throws
+rejects the returned promise; invalid arguments throw synchronously.
+
 ### Time-Based Triggers
 
 `every(interval, ...)` fires repeatedly on a fixed interval. The interval is
@@ -246,6 +271,7 @@ new Agent<TState>(config?: AgentConfig<TState>)
 - `isPaused(): boolean`
 - `getStatus(): AgentStatus`
 - `settle(quietCycles?: number, timeout?: number): Promise<void>`
+- `waitFor(predicate: (state: TState) => boolean, timeout?: number): Promise<TState>`
 
 Valid lifecycle transitions:
 
@@ -353,6 +379,7 @@ const agent = new Agent({
 
 - `updateState()` is a shallow merge for object state.
 - `settle()` requires the agent to be running.
+- `waitFor()` is callable in any status and resolves with the matching state.
 - Disabled triggers remain registered and can be re-enabled.
 - Event triggers created with `on()` are normal triggers and can be removed with `off()`.
 - Scheduled triggers registered with `at()` and `every()` keep their trigger IDs across stop/start.

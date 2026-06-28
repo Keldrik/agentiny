@@ -13,7 +13,7 @@ const log = (tag, msg) => console.log(`[${tag.padEnd(6)}] ${msg}`);
 const section = (title) => console.log(`\n--- ${title} ---`);
 
 const agent = new Agent({
-  initialState: { count: 0, ready: false },
+  initialState: { count: 0, ready: false, taskDone: false },
 });
 
 agent.when(
@@ -61,6 +61,7 @@ console.log(`  once()  — fires the first time state.ready becomes truthy`);
 console.log(`  on()    — fires on each 'login' event emission`);
 console.log(`  every() — fires every 500ms, gated by a condition that stops after 3`);
 console.log(`  at()    — fires once at ${timeStr} (~${Math.round(waitMs / 1000)}s from now)`);
+console.log(`  waitFor() — awaits a state predicate and resolves with the matching state`);
 
 await agent.start();
 
@@ -80,6 +81,21 @@ agent.emitEvent('login');
 await agent.settle();
 agent.emitEvent('login');
 await agent.settle();
+
+section('awaiting a condition with waitFor()');
+// Kick off a "background task" that flips taskDone after a short delay, then
+// await it imperatively. waitFor() resolves with the state that satisfied it.
+setTimeout(() => agent.updateState({ taskDone: true }), 300);
+log('main', 'awaiting state.taskDone === true ...');
+const settled = await agent.waitFor((s) => s.taskDone === true);
+log('waitFor', `resolved (count=${settled.count}, taskDone=${settled.taskDone})`);
+
+section('waitFor() timeout (predicate never satisfied)');
+try {
+  await agent.waitFor((s) => s.count > 1000, 300);
+} catch (err) {
+  log('waitFor', `rejected as expected: ${err.code} — ${err.message}`);
+}
 
 section('letting every() poll for ~2s');
 await new Promise((r) => setTimeout(r, 2000));

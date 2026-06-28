@@ -16,7 +16,15 @@
  * ```
  */
 
-export type { TriggerFn, ConditionFn, ActionFn, AgentConfig, Trigger, LoggerFn } from './types';
+export type {
+  TriggerFn,
+  ConditionFn,
+  ActionFn,
+  AgentConfig,
+  Trigger,
+  LoggerFn,
+  WaitForPredicate,
+} from './types';
 export { Agent, AgentError } from './agent';
 export { State } from './state';
 export { AgentStatus } from './types';

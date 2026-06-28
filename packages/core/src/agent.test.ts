@@ -2053,6 +2053,155 @@ describe('Agent', () => {
     });
   });
 
+  // ─── waitFor() ───────────────────────────────────────────────────────────────
+
+  describe('waitFor() - wait for state predicate', () => {
+    describe('basic functionality', () => {
+      it('resolves immediately with the state when predicate is already true', async () => {
+        agent.setState({ count: 5 });
+        const result = await agent.waitFor((state) => state.count >= 5);
+        expect(result).toEqual({ count: 5 });
+      });
+
+      it('resolves with the matching state when a later setState satisfies it', async () => {
+        await agent.start();
+        const pending = agent.waitFor((state) => state.count >= 3);
+        agent.setState({ count: 3 });
+        const result = await pending;
+        expect(result.count).toBe(3);
+        await agent.stop();
+      });
+
+      it('resolves with the live state reference (consistent with getState())', async () => {
+        await agent.start();
+        const pending = agent.waitFor((state) => state.count >= 1);
+        agent.setState({ count: 1 });
+        const result = await pending;
+        expect(result).toBe(agent.getState());
+        await agent.stop();
+      });
+
+      it('observes in-place state mutations made by actions while running', async () => {
+        agent.when(
+          (state) => state.count === 1,
+          [
+            (state) => {
+              state.count = 99;
+            },
+          ],
+        );
+        await agent.start();
+        const pending = agent.waitFor((state) => state.count === 99);
+        agent.setState({ count: 1 });
+        const result = await pending;
+        expect(result.count).toBe(99);
+        await agent.stop();
+      });
+    });
+
+    describe('evaluation while idle or paused', () => {
+      it('resolves on a setState that happens before start()', async () => {
+        const pending = agent.waitFor((state) => state.count >= 2);
+        agent.setState({ count: 2 });
+        const result = await pending;
+        expect(result.count).toBe(2);
+      });
+
+      it('resolves on a setState that happens while paused', async () => {
+        await agent.start();
+        await agent.pause();
+        const pending = agent.waitFor((state) => state.count >= 4);
+        agent.setState({ count: 4 });
+        const result = await pending;
+        expect(result.count).toBe(4);
+        await agent.resume();
+        await agent.stop();
+      });
+    });
+
+    describe('error handling', () => {
+      it('throws INVALID_ARGUMENT synchronously when predicate is not a function', () => {
+        expect(() =>
+          agent.waitFor(undefined as unknown as (s: { count: number }) => boolean),
+        ).toThrowError(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+      });
+
+      it('throws INVALID_ARGUMENT synchronously for non-positive or infinite timeout', () => {
+        expect(() => agent.waitFor(() => true, 0)).toThrowError(
+          expect.objectContaining({ code: 'INVALID_ARGUMENT' }),
+        );
+        expect(() => agent.waitFor(() => true, Number.POSITIVE_INFINITY)).toThrowError(
+          expect.objectContaining({ code: 'INVALID_ARGUMENT' }),
+        );
+      });
+
+      it('rejects when the predicate throws on the immediate check', async () => {
+        const boom = new Error('boom');
+        await expect(
+          agent.waitFor(() => {
+            throw boom;
+          }),
+        ).rejects.toBe(boom);
+      });
+
+      it('rejects when the predicate throws on a later evaluation and stays responsive', async () => {
+        await agent.start();
+        const pending = agent.waitFor((state) => {
+          if (state.count > 0) {
+            throw new Error('late');
+          }
+          return false;
+        });
+        agent.setState({ count: 1 });
+        await expect(pending).rejects.toThrow('late');
+
+        // A throwing predicate must not spin/hang the loop: a fresh waitFor still resolves.
+        agent.setState({ count: 5 });
+        const result = await agent.waitFor((state) => state.count >= 5);
+        expect(result.count).toBe(5);
+        await agent.stop();
+      });
+    });
+
+    describe('timeout behavior', () => {
+      it('rejects with WAITFOR_TIMEOUT when never satisfied in time', async () => {
+        await agent.start();
+        await expect(agent.waitFor(() => false, 50)).rejects.toThrowError(
+          expect.objectContaining({ code: 'WAITFOR_TIMEOUT' }),
+        );
+        await agent.stop();
+      });
+    });
+
+    describe('lifecycle', () => {
+      it('rejects pending waiters with AGENT_STOPPED on stop()', async () => {
+        await agent.start();
+        const pending = agent.waitFor((state) => state.count >= 100);
+        await agent.stop();
+        await expect(pending).rejects.toThrowError(
+          expect.objectContaining({ code: 'AGENT_STOPPED' }),
+        );
+      });
+    });
+
+    describe('multiple concurrent waitFor calls', () => {
+      it('resolves each waiter with the state matching its own predicate', async () => {
+        await agent.start();
+        const first = agent.waitFor((state) => state.count >= 2);
+        const second = agent.waitFor((state) => state.count >= 5);
+
+        agent.setState({ count: 2 });
+        const firstResult = await first;
+        expect(firstResult.count).toBe(2);
+
+        agent.setState({ count: 5 });
+        const secondResult = await second;
+        expect(secondResult.count).toBe(5);
+        await agent.stop();
+      });
+    });
+  });
+
   // ─── updateState() ───────────────────────────────────────────────────────────
 
   describe('updateState()', () => {

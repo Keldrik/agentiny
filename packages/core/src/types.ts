@@ -17,6 +17,18 @@ export type TriggerFn<TState = unknown> = (state: TState) => boolean | Promise<b
 export type ConditionFn<TState = unknown> = (state: TState) => boolean | Promise<boolean>;
 
 /**
+ * Function type for `waitFor()` predicates
+ *
+ * Evaluated synchronously against the current state each time the state changes
+ * (and on every execution-loop cycle while running). Must return a boolean.
+ *
+ * @template TState - The type of the state object
+ * @param state - Current state
+ * @returns True when the awaited condition is satisfied
+ */
+export type WaitForPredicate<TState = unknown> = (state: TState) => boolean;
+
+/**
  * Function type for actions to execute
  *
  * @template TState - The type of the state object

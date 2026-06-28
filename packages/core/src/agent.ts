@@ -2,7 +2,15 @@ import { State } from './state';
 import { evaluateConditions } from './conditions';
 import { executeActions } from './actions';
 import { AgentError } from './errors';
-import type { AgentConfig, Trigger, AgentStatus, ActionFn, ConditionFn, TriggerFn } from './types';
+import type {
+  AgentConfig,
+  Trigger,
+  AgentStatus,
+  ActionFn,
+  ConditionFn,
+  TriggerFn,
+  WaitForPredicate,
+} from './types';
 import { AgentStatus as AgentStatusEnum } from './types';
 import type { AtOptions, EveryOptions, IntervalSpec } from './schedule';
 import { msUntil, nextOccurrence, parseInterval, parseTimeOfDay } from './schedule';
@@ -22,6 +30,16 @@ interface SettleResolver {
 interface DelayWaiter {
   timer: ReturnType<typeof setTimeout>;
   resolve: (completed: boolean) => void;
+}
+
+/**
+ * Internal interface for tracking pending waitFor() promises
+ */
+interface WaitForResolver<TState> {
+  predicate: WaitForPredicate<TState>;
+  resolve: (state: TState) => void;
+  reject: (error: Error) => void;
+  timeoutId?: ReturnType<typeof setTimeout>;
 }
 
 interface ScheduleController {
@@ -68,6 +86,7 @@ export class Agent<TState = unknown> {
   private _triggerIdCounter = 0;
   private _consecutiveQuietCycles = 0;
   private _settleResolvers: SettleResolver[] = [];
+  private _waitForResolvers: WaitForResolver<TState>[] = [];
   private _wakeResolve: (() => void) | null = null;
   private _idleTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private _idleTimeout: number;
@@ -104,6 +123,9 @@ export class Agent<TState = unknown> {
     // Subscribe to state changes to trigger re-evaluation of triggers
     this._state.subscribe(() => {
       this._stateChanged = true;
+      // Resolve any waitFor() predicates immediately on setState/updateState so
+      // they settle with zero latency and work even while idle or paused.
+      this._checkWaitForResolvers();
       this._wake();
     });
 
@@ -502,6 +524,20 @@ export class Agent<TState = unknown> {
       }
       this._settleResolvers = [];
 
+      // Reject all pending waitFor promises so awaiters don't hang
+      const waitStopError = new AgentError(
+        'Agent stopped while waiting for predicate',
+        'AGENT_STOPPED',
+        { pendingWaiters: this._waitForResolvers.length },
+      );
+      for (const resolver of this._waitForResolvers) {
+        if (resolver.timeoutId) {
+          clearTimeout(resolver.timeoutId);
+        }
+        resolver.reject(waitStopError);
+      }
+      this._waitForResolvers = [];
+
       // Wait for the execution loop to finish
       if (this._executionLoop) {
         await this._executionLoop;
@@ -700,6 +736,80 @@ export class Agent<TState = unknown> {
   }
 
   /**
+   * Wait until the agent's state first satisfies a predicate.
+   *
+   * Returns a promise that resolves with the matching state the moment the
+   * predicate returns true. Unlike settle() (which waits for the whole system
+   * to go quiet), waitFor() waits for one specific condition.
+   *
+   * Predicates are evaluated synchronously: immediately when called, on every
+   * setState()/updateState() change (zero latency, even while idle or paused),
+   * and on every execution-loop cycle while running (so in-place action
+   * mutations are observed too). The resolved value is the live state reference,
+   * consistent with getState() — it is not deep cloned and may continue to
+   * mutate after resolution.
+   *
+   * Callable in any status. Note that without a running agent only
+   * setState()/updateState() changes can satisfy the predicate; trigger- and
+   * timer-driven changes require start(). A predicate that throws rejects the
+   * returned promise.
+   *
+   * @param predicate - Synchronous function tested against the current state
+   * @param timeout - Maximum time to wait in milliseconds (default: 10000)
+   * @returns Promise resolving with the state that satisfied the predicate
+   * @throws {AgentError} Synchronously if predicate is not a function or timeout
+   *   is not a positive finite number
+   * @throws {AgentError} (rejection) with code `WAITFOR_TIMEOUT` if the
+   *   predicate is not satisfied in time, or `AGENT_STOPPED` if the agent is
+   *   stopped while waiting
+   *
+   * @example
+   * ```typescript
+   * await agent.start();
+   * const ready = await agent.waitFor((state) => state.ready);
+   * ```
+   */
+  waitFor(predicate: WaitForPredicate<TState>, timeout = 10000): Promise<TState> {
+    if (typeof predicate !== 'function') {
+      throw new AgentError('predicate must be a function', 'INVALID_ARGUMENT', {});
+    }
+    if (!Number.isFinite(timeout) || timeout <= 0) {
+      throw new AgentError('timeout must be a positive finite number', 'INVALID_ARGUMENT', {
+        timeout,
+      });
+    }
+
+    // Immediate synchronous check: resolve/reject now if already satisfied.
+    const state = this._state.get();
+    try {
+      if (predicate(state) === true) {
+        return Promise.resolve(state);
+      }
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    return new Promise<TState>((resolve, reject) => {
+      const resolver: WaitForResolver<TState> = { predicate, resolve, reject };
+
+      resolver.timeoutId = setTimeout(() => {
+        const idx = this._waitForResolvers.indexOf(resolver);
+        if (idx !== -1) {
+          this._waitForResolvers.splice(idx, 1);
+        }
+        reject(
+          new AgentError(`waitFor() timed out after ${timeout}ms`, 'WAITFOR_TIMEOUT', { timeout }),
+        );
+      }, timeout);
+
+      this._waitForResolvers.push(resolver);
+      // Wake the loop so it switches to the faster poll interval (and observes
+      // in-place mutations) while this waiter is pending.
+      this._wake();
+    });
+  }
+
+  /**
    * Internal method to check and resolve settle promises
    *
    * Called each quiet cycle to check if any pending settle promises can be resolved.
@@ -717,6 +827,57 @@ export class Agent<TState = unknown> {
       }
       return true; // Keep in array
     });
+  }
+
+  /**
+   * Internal method to check and resolve waitFor promises.
+   *
+   * Evaluates each pending predicate against the current state. Resolves
+   * matching waiters and rejects waiters whose predicate throws.
+   *
+   * Reentrancy- and mutation-safe: predicates run user code that may call
+   * setState()/stop()/waitFor() and re-enter this method. We snapshot the
+   * resolver list, re-read state per iteration, skip resolvers already removed
+   * by a reentrant call or timeout, and remove each resolver from the live
+   * array before settling it. A throwing predicate is caught per-resolver and
+   * never rethrown (which would otherwise spin the execution loop).
+   */
+  private _checkWaitForResolvers(): void {
+    if (this._waitForResolvers.length === 0) {
+      return;
+    }
+    const pending = this._waitForResolvers.slice();
+    for (const resolver of pending) {
+      // Skip if a reentrant call or the timeout already settled this resolver.
+      if (this._waitForResolvers.indexOf(resolver) === -1) {
+        continue;
+      }
+      const state = this._state.get();
+      let matched = false;
+      let thrown: Error | undefined;
+      try {
+        matched = resolver.predicate(state) === true;
+      } catch (error) {
+        thrown = error instanceof Error ? error : new Error(String(error));
+      }
+      if (!matched && !thrown) {
+        continue;
+      }
+      // Remove from the live array before settling so reentrant calls don't
+      // observe a settled resolver.
+      const idx = this._waitForResolvers.indexOf(resolver);
+      if (idx !== -1) {
+        this._waitForResolvers.splice(idx, 1);
+      }
+      if (resolver.timeoutId) {
+        clearTimeout(resolver.timeoutId);
+      }
+      if (thrown) {
+        resolver.reject(thrown);
+      } else {
+        resolver.resolve(state);
+      }
+    }
   }
 
   /**
@@ -743,8 +904,10 @@ export class Agent<TState = unknown> {
    * Returns immediately if there are pending changes. Otherwise waits for
    * either a wake signal (from setState/emitEvent) or a timeout.
    *
-   * Uses a short 10ms timeout when settle() is pending to maintain quiet cycle
-   * tracking. Uses the configurable idleTimeout otherwise to save CPU.
+   * Uses a short 10ms timeout when settle() or waitFor() is pending — for
+   * settle() to maintain quiet cycle tracking, and for waitFor() to notice
+   * in-place state mutations promptly. Uses the configurable idleTimeout
+   * otherwise to save CPU.
    */
   private _waitForNextCycle(): Promise<void> {
     // If already have pending changes, don't wait
@@ -754,16 +917,17 @@ export class Agent<TState = unknown> {
 
     const pollInterval = 10; // milliseconds for settle() quiet cycle tracking
     const hasSettleWaiters = this._settleResolvers.length > 0;
+    const hasWaitForWaiters = this._waitForResolvers.length > 0;
 
     // Create wake promise
     const wakePromise = new Promise<void>((resolve) => {
       this._wakeResolve = resolve;
     });
 
-    // Determine timeout based on whether settle() is waiting
-    // Short timeout (10ms) when settle needs quiet cycle tracking
-    // Configurable idle timeout when no settle is pending
-    const timeout = hasSettleWaiters ? pollInterval : this._idleTimeout;
+    // Determine timeout based on whether settle()/waitFor() is waiting.
+    // Short timeout (10ms) when settle needs quiet cycle tracking or waitFor
+    // needs to observe in-place mutations; configurable idle timeout otherwise.
+    const timeout = hasSettleWaiters || hasWaitForWaiters ? pollInterval : this._idleTimeout;
 
     const timeoutPromise = new Promise<void>((resolve) => {
       this._idleTimeoutId = setTimeout(() => {
@@ -815,6 +979,10 @@ export class Agent<TState = unknown> {
             await this._checkAndExecuteTrigger(trigger);
           }
         }
+
+        // Resolve waitFor() predicates every cycle so in-place action mutations
+        // (which never go through State.set) are observed while running.
+        this._checkWaitForResolvers();
 
         // Track quiet cycles for settle() functionality
         if (stateChangedThisCycle) {

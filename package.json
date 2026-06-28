@@ -12,8 +12,8 @@
     "demo": "npm run build -w @agentiny/core && node examples/triggers-demo.mjs"
   },
   "devDependencies": {
-    "oxfmt": "^0.51.0",
-    "oxlint": "^1.66.0",
+    "oxfmt": "^0.56.0",
+    "oxlint": "^1.71.0",
     "tsup": "^8.5.1"
   }
 }
