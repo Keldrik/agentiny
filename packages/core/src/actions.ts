@@ -1,4 +1,4 @@
-import type { ActionFn } from './types';
+import type { ActionContext, ActionFn } from './types';
 
 /**
  * Executes an array of action functions against the provided state.
@@ -12,6 +12,8 @@ import type { ActionFn } from './types';
  * @template TState - The type of the state object
  * @param actions - Array of action functions to execute
  * @param state - The state object to pass to each action (may be mutated)
+ * @param ctx - Optional action context (AbortSignal, triggerId) passed as the
+ *   second argument to each action
  * @returns A promise that resolves to an array of errors encountered (empty if none)
  *
  * @example
@@ -56,15 +58,16 @@ import type { ActionFn } from './types';
 export async function executeActions<TState>(
   actions: readonly ActionFn<TState>[],
   state: TState,
+  ctx?: ActionContext,
 ): Promise<Error[]> {
   const errors: Error[] = [];
 
   // Execute each action sequentially
   for (const action of actions) {
     try {
-      // Use Promise.resolve() to uniformly handle both sync and async actions
-
-      await Promise.resolve(action(state));
+      // Use Promise.resolve() to uniformly handle both sync and async actions.
+      // Only pass ctx when provided so one-arg actions / mocks keep exact arity.
+      await Promise.resolve(ctx !== undefined ? action(state, ctx) : action(state));
     } catch (error) {
       // Collect the error but continue executing remaining actions
       if (error instanceof Error) {

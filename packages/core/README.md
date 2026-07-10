@@ -78,6 +78,22 @@ Actions receive the live state object. If you mutate it directly, later triggers
 in the same evaluation pass can see that mutation. If you need to schedule a new
 evaluation pass, call `setState()` or `updateState()`.
 
+Actions may also accept an optional second `ActionContext` argument:
+
+```typescript
+async (state, ctx) => {
+  // ctx.signal is aborted when the agent is stopped or paused
+  await fetch(url, { signal: ctx?.signal });
+};
+```
+
+`stop()` / `pause()` called from inside an action do not deadlock: they request
+shutdown and return without awaiting the execution loop.
+
+Trigger `delay` is non-blocking — other triggers keep evaluating while a delayed
+trigger waits. Actions always see state as of execution time (not a pre-delay
+snapshot). At most one delay is pending per trigger.
+
 ## Common Patterns
 
 ### Partial State Updates
@@ -122,6 +138,10 @@ once, not once per call — if you need per-message delivery, model the count
 in state. A pending emission is consumed only after the trigger's conditions
 pass, so a failing condition leaves the emission armed until conditions are
 satisfied on a later cycle or the trigger is removed.
+
+Emissions made while the agent is idle or stopped stay pending and fire on
+the next `start()`. Already-consumed emissions are not re-fired across
+stop/start cycles.
 
 ### Wait For A Condition
 
@@ -319,13 +339,21 @@ stopped -> running
 ```typescript
 type TriggerFn<TState> = (state: TState) => boolean | Promise<boolean>;
 type ConditionFn<TState> = (state: TState) => boolean | Promise<boolean>;
-type ActionFn<TState> = (state: TState) => void | Promise<void>;
+
+interface ActionContext {
+  signal: AbortSignal;
+  triggerId: string;
+}
+
+type ActionFn<TState> = (state: TState, ctx?: ActionContext) => void | Promise<void>;
 
 interface AgentConfig<TState> {
   initialState?: TState;
   triggers?: Trigger<TState>[];
   onError?: (error: Error) => void;
   idleTimeout?: number;
+  /** @default 1000 — breaks unbounded setState cascades */
+  maxCascadeDepth?: number;
   logger?: (error: unknown) => void;
 }
 
@@ -385,6 +413,8 @@ const agent = new Agent({
 - Scheduled triggers registered with `at()` and `every()` keep their trigger IDs across stop/start.
 - While paused, scheduled timers may continue ticking, but actions do not run until resume.
 - `idleTimeout` controls how often the loop wakes when there is no work. The default is `100ms`.
+- `maxCascadeDepth` (default `1000`) caps consecutive dirty evaluation passes. When exceeded, the agent reports `CASCADE_LIMIT_EXCEEDED` via `onError`, clears the dirty flag, and keeps running.
+- Long-running actions should observe `ctx.signal` for cooperative cancellation on stop/pause.
 
 ## License
 

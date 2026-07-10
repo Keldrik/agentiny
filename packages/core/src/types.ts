@@ -29,13 +29,34 @@ export type ConditionFn<TState = unknown> = (state: TState) => boolean | Promise
 export type WaitForPredicate<TState = unknown> = (state: TState) => boolean;
 
 /**
+ * Context passed as the optional second argument to action functions.
+ *
+ * Actions may ignore this argument. Long-running actions should observe
+ * `signal` and abort when the agent is stopped or paused.
+ */
+export interface ActionContext {
+  /**
+   * Aborted when the agent is stopped or paused.
+   */
+  signal: AbortSignal;
+  /**
+   * Id of the trigger that invoked this action.
+   */
+  triggerId: string;
+}
+
+/**
  * Function type for actions to execute
  *
  * @template TState - The type of the state object
  * @param state - Current state (may be mutated)
+ * @param ctx - Optional execution context (signal, triggerId)
  * @returns Void or promise
  */
-export type ActionFn<TState = unknown> = (state: TState) => void | Promise<void>;
+export type ActionFn<TState = unknown> = (
+  state: TState,
+  ctx?: ActionContext,
+) => void | Promise<void>;
 
 /**
  * Logger function type for error reporting
@@ -68,6 +89,13 @@ export interface AgentConfig<TState = unknown> {
    * @default 100
    */
   idleTimeout?: number;
+  /**
+   * Max consecutive evaluation passes driven by state changes within one cascade.
+   * When exceeded, the agent clears the dirty flag, reports via onError with code
+   * `CASCADE_LIMIT_EXCEEDED`, and continues running.
+   * @default 1000
+   */
+  maxCascadeDepth?: number;
   /**
    * Custom logger for state subscriber errors
    * @default console.error
@@ -103,7 +131,12 @@ export interface Trigger<TState = unknown> {
    */
   repeat?: boolean;
   /**
-   * Delay in milliseconds before executing actions
+   * Delay in milliseconds before executing actions.
+   *
+   * Delays are non-blocking: other triggers continue to evaluate while a
+   * delayed trigger waits. Actions always receive a fresh state snapshot
+   * taken immediately before execution (not the pre-delay state).
+   * At most one delay may be pending per trigger at a time.
    */
   delay?: number;
   /**

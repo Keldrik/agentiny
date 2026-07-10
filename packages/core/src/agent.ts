@@ -6,6 +6,7 @@ import type {
   AgentConfig,
   Trigger,
   AgentStatus,
+  ActionContext,
   ActionFn,
   ConditionFn,
   TriggerFn,
@@ -16,6 +17,9 @@ import type { AtOptions, EveryOptions, IntervalSpec } from './schedule';
 import { msUntil, nextOccurrence, parseInterval, parseTimeOfDay } from './schedule';
 
 export { AgentError };
+
+/** Default max consecutive cascade evaluation passes before the agent breaks the loop. */
+const DEFAULT_MAX_CASCADE_DEPTH = 1000;
 
 /**
  * Internal interface for tracking pending settle() promises
@@ -78,6 +82,8 @@ export class Agent<TState = unknown> {
   private _onError?: (error: Error) => void;
   private _executionLoop: Promise<void> | null = null;
   private _shouldRun = false;
+  /** True while the body of `_runExecutionLoop` is on the call stack. */
+  private _insideExecutionLoop = false;
   private _stateChanged = true;
   private _eventEmissionCount = new Map<string, number>();
   private _eventLastSeenByTrigger = new Map<string, Map<string, number>>();
@@ -85,11 +91,13 @@ export class Agent<TState = unknown> {
   private _eventTriggerConsumers = new Map<string, () => void>();
   private _triggerIdCounter = 0;
   private _consecutiveQuietCycles = 0;
+  private _cascadeDepth = 0;
   private _settleResolvers: SettleResolver[] = [];
   private _waitForResolvers: WaitForResolver<TState>[] = [];
   private _wakeResolve: (() => void) | null = null;
   private _idleTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private _idleTimeout: number;
+  private _maxCascadeDepth: number;
   private _initialState: TState | undefined;
   private _disabledTriggers: Set<string> = new Set<string>();
   private _triggerFireCount: Map<string, number> = new Map<string, number>();
@@ -97,6 +105,9 @@ export class Agent<TState = unknown> {
   private _scheduleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private _scheduleControllers = new Map<string, ScheduleController>();
   private _delayWaiters = new Map<string, Set<DelayWaiter>>();
+  /** Trigger ids whose delay completed and are waiting to run actions on the loop. */
+  private _pendingDelayedExecutions: string[] = [];
+  private _abortController: AbortController | null = null;
 
   /**
    * Create a new Agent instance
@@ -118,6 +129,15 @@ export class Agent<TState = unknown> {
       });
     }
     this._idleTimeout = config.idleTimeout ?? 100;
+    if (
+      config.maxCascadeDepth !== undefined &&
+      (!Number.isInteger(config.maxCascadeDepth) || config.maxCascadeDepth <= 0)
+    ) {
+      throw new AgentError('maxCascadeDepth must be a positive integer', 'INVALID_ARGUMENT', {
+        maxCascadeDepth: config.maxCascadeDepth,
+      });
+    }
+    this._maxCascadeDepth = config.maxCascadeDepth ?? DEFAULT_MAX_CASCADE_DEPTH;
     this._initialState = config.initialState;
 
     // Subscribe to state changes to trigger re-evaluation of triggers
@@ -311,6 +331,9 @@ export class Agent<TState = unknown> {
     this._stopScheduledTrigger(id, true);
     this._scheduleControllers.delete(id);
     this._cancelDelayWaiters(id);
+    this._pendingDelayedExecutions = this._pendingDelayedExecutions.filter(
+      (pendingId) => pendingId !== id,
+    );
 
     // Clean up from event tracking maps
     this._eventLastSeenByTrigger.forEach((triggerMap) => {
@@ -341,6 +364,7 @@ export class Agent<TState = unknown> {
     this._stopAllScheduledTriggers(true);
     this._scheduleControllers.clear();
     this._cancelAllDelayWaiters();
+    this._pendingDelayedExecutions = [];
     this._triggers.clear();
     this._eventTriggers.clear();
     this._eventEmissionCount.clear();
@@ -436,18 +460,20 @@ export class Agent<TState = unknown> {
   /**
    * Start the agent (evaluates triggers)
    *
-   * Transitions the agent from idle to running status. If the agent is already
+   * Transitions the agent from idle or stopped to running status. If the agent is already
    * running, throws an AgentError. Starts the internal execution loop that continuously
    * checks triggers and executes them when conditions are met.
    *
-   * @throws {AgentError} If agent is already running
+   * Event emissions made while idle or stopped are preserved and will be processed
+   * on the first evaluation pass after start. Already-consumed events are not re-fired.
+   *
+   * @throws {AgentError} If agent is already running or paused
    *
    * @example
    * ```typescript
    * await agent.start();
    * ```
    */
-
   async start(): Promise<void> {
     try {
       if (this._status === AgentStatusEnum.Running) {
@@ -465,8 +491,10 @@ export class Agent<TState = unknown> {
       this._shouldRun = true;
       this._stateChanged = true; // Evaluate triggers immediately on start
       this._consecutiveQuietCycles = 0; // Reset quiet cycle counter
-      this._eventEmissionCount.clear();
-      this._eventLastSeenByTrigger.clear();
+      this._cascadeDepth = 0;
+      // Preserve event emission bookkeeping so emissions made while idle/stopped
+      // still fire on the first pass. Do not clear lastSeen (would re-fire consumed events).
+      this._abortController = new AbortController();
       this._startScheduledTriggers();
 
       // Start the execution loop (fire and forget)
@@ -482,11 +510,16 @@ export class Agent<TState = unknown> {
   /**
    * Stop the agent
    *
-   * Transitions the agent from running to stopped status. If the agent is not
-   * currently running, throws an AgentError. Stops the internal execution loop and
-   * waits for any ongoing trigger execution to complete.
+   * Transitions the agent from running or paused to stopped status. If the agent is not
+   * currently running or paused, throws an AgentError.
    *
-   * @throws {AgentError} If agent is not running
+   * Aborts the run-session `AbortSignal` so cooperative actions can exit early.
+   * When called from outside the execution loop, waits for the loop (and any
+   * in-flight action) to finish. When called from inside an action, returns
+   * after requesting stop without awaiting the loop (avoids deadlock); the loop
+   * exits once the current action returns.
+   *
+   * @throws {AgentError} If agent is not running or paused
    *
    * @example
    * ```typescript
@@ -503,10 +536,12 @@ export class Agent<TState = unknown> {
 
       this._status = AgentStatusEnum.Stopped;
       this._shouldRun = false;
+      this._abortCurrentRun();
 
       // Cancel any pending scheduled timers so they don't fire post-stop
       this._stopAllScheduledTriggers(true);
       this._cancelAllDelayWaiters();
+      this._pendingDelayedExecutions = [];
 
       // Wake the execution loop so it can exit immediately
       this._wake();
@@ -537,6 +572,11 @@ export class Agent<TState = unknown> {
         resolver.reject(waitStopError);
       }
       this._waitForResolvers = [];
+
+      // Avoid deadlock when stop() is called from inside an action on the loop stack.
+      if (this._insideExecutionLoop) {
+        return;
+      }
 
       // Wait for the execution loop to finish
       if (this._executionLoop) {
@@ -576,6 +616,9 @@ export class Agent<TState = unknown> {
    * current state, and pending settle() promises. Pending settle() timeouts
    * continue to tick while paused. Resume with resume().
    *
+   * Aborts the run-session `AbortSignal`. When called from inside an action,
+   * returns without awaiting the loop (avoids deadlock).
+   *
    * @throws {AgentError} If agent is not running
    * @throws {AgentError} If agent is already paused
    *
@@ -601,10 +644,17 @@ export class Agent<TState = unknown> {
 
       this._status = AgentStatusEnum.Paused;
       this._shouldRun = false;
+      this._abortCurrentRun();
       this._cancelAllDelayWaiters();
+      this._pendingDelayedExecutions = [];
 
       // Wake the loop so it exits its current wait immediately
       this._wake();
+
+      // Avoid deadlock when pause() is called from inside an action on the loop stack.
+      if (this._insideExecutionLoop) {
+        return;
+      }
 
       // Wait for the execution loop to finish its current cycle and exit
       if (this._executionLoop) {
@@ -647,6 +697,8 @@ export class Agent<TState = unknown> {
       this._status = AgentStatusEnum.Running;
       this._shouldRun = true;
       this._stateChanged = true; // Re-evaluate triggers immediately on resume
+      this._cascadeDepth = 0;
+      this._abortController = new AbortController();
 
       // Restart the execution loop
       this._executionLoop = this._runExecutionLoop();
@@ -704,8 +756,12 @@ export class Agent<TState = unknown> {
       });
     }
 
-    // If already quiet enough AND no pending state changes, resolve immediately
-    if (!this._stateChanged && this._consecutiveQuietCycles >= quietCycles) {
+    // If already quiet enough AND no pending state changes or delayed work, resolve immediately
+    if (
+      !this._stateChanged &&
+      !this._hasPendingDelayedWork() &&
+      this._consecutiveQuietCycles >= quietCycles
+    ) {
       return Promise.resolve();
     }
 
@@ -813,8 +869,12 @@ export class Agent<TState = unknown> {
    * Internal method to check and resolve settle promises
    *
    * Called each quiet cycle to check if any pending settle promises can be resolved.
+   * Pending delays or delayed executions prevent settle from resolving.
    */
   private _checkSettleResolvers(): void {
+    if (this._hasPendingDelayedWork()) {
+      return;
+    }
     // Filter out resolved promises
     this._settleResolvers = this._settleResolvers.filter((resolver) => {
       if (this._consecutiveQuietCycles >= resolver.quietCycles) {
@@ -827,6 +887,32 @@ export class Agent<TState = unknown> {
       }
       return true; // Keep in array
     });
+  }
+
+  /**
+   * True when a delay is open or delayed actions are queued to run on the loop.
+   */
+  private _hasPendingDelayedWork(): boolean {
+    return this._delayWaiters.size > 0 || this._pendingDelayedExecutions.length > 0;
+  }
+
+  /**
+   * Abort the current run session so cooperative actions observe signal.aborted.
+   */
+  private _abortCurrentRun(): void {
+    if (this._abortController && !this._abortController.signal.aborted) {
+      this._abortController.abort();
+    }
+  }
+
+  private _buildActionContext(triggerId: string): ActionContext | undefined {
+    if (!this._abortController) {
+      return undefined;
+    }
+    return {
+      signal: this._abortController.signal,
+      triggerId,
+    };
   }
 
   /**
@@ -904,125 +990,167 @@ export class Agent<TState = unknown> {
    * Returns immediately if there are pending changes. Otherwise waits for
    * either a wake signal (from setState/emitEvent) or a timeout.
    *
+   * Installs the wake resolver before re-checking dirty flags so a concurrent
+   * `_wake()` cannot be lost between the check and the install (TOCTOU).
+   *
    * Uses a short 10ms timeout when settle() or waitFor() is pending — for
    * settle() to maintain quiet cycle tracking, and for waitFor() to notice
    * in-place state mutations promptly. Uses the configurable idleTimeout
    * otherwise to save CPU.
    */
   private _waitForNextCycle(): Promise<void> {
-    // If already have pending changes, don't wait
-    if (this._stateChanged) {
+    // Fast path: already dirty — no need to install a waiter.
+    if (this._stateChanged || this._pendingDelayedExecutions.length > 0) {
       return Promise.resolve();
     }
 
     const pollInterval = 10; // milliseconds for settle() quiet cycle tracking
     const hasSettleWaiters = this._settleResolvers.length > 0;
     const hasWaitForWaiters = this._waitForResolvers.length > 0;
-
-    // Create wake promise
-    const wakePromise = new Promise<void>((resolve) => {
-      this._wakeResolve = resolve;
-    });
-
-    // Determine timeout based on whether settle()/waitFor() is waiting.
-    // Short timeout (10ms) when settle needs quiet cycle tracking or waitFor
+    // Short timeout when settle needs quiet cycle tracking or waitFor
     // needs to observe in-place mutations; configurable idle timeout otherwise.
     const timeout = hasSettleWaiters || hasWaitForWaiters ? pollInterval : this._idleTimeout;
 
-    const timeoutPromise = new Promise<void>((resolve) => {
+    return new Promise<void>((resolve) => {
+      // Install wake resolver first, then re-check dirty flags so a wake that
+      // arrives in the gap between the fast-path check and this install is not lost.
+      this._wakeResolve = resolve;
+
+      if (this._stateChanged || this._pendingDelayedExecutions.length > 0) {
+        if (this._wakeResolve === resolve) {
+          this._wakeResolve = null;
+        }
+        resolve();
+        return;
+      }
+
       this._idleTimeoutId = setTimeout(() => {
         this._idleTimeoutId = null;
+        if (this._wakeResolve === resolve) {
+          this._wakeResolve = null;
+        }
         resolve();
       }, timeout);
     });
-
-    return Promise.race([wakePromise, timeoutPromise]);
   }
 
   /**
    * Internal execution loop that continuously checks and executes triggers.
    *
    * This method runs while the agent is running (_shouldRun is true). It:
-   * 1. Checks if state has changed since the last evaluation (optimization)
+   * 1. Drains pending delayed executions (actions armed after a non-blocking delay)
    * 2. If state changed, iterates through all registered triggers
-   * 3. Checks if each trigger's condition is met
-   * 4. Evaluates conditions if the trigger check passes
-   * 5. Executes actions if all conditions pass
-   * 6. Handles repeating vs one-time triggers
-   * 7. Applies delays before action execution
-   * 8. Collects and reports any errors
+   * 3. Checks if each trigger's condition is met and evaluates conditions
+   * 4. Executes actions immediately or arms a non-blocking delay
+   * 5. Handles repeating vs one-time triggers and maxFires
+   * 6. Enforces maxCascadeDepth to break unbounded re-evaluation loops
    *
    * Performance Optimization:
    * - Uses event-driven wake mechanism for immediate response to state changes
    * - Only evaluates triggers when state changes, not on every cycle
+   * - Delays do not block evaluation of other triggers
    * - Uses configurable idleTimeout when no settle() is pending
    * - Maintains 10ms polling when settle() is waiting for quiet cycles
    *
    * @returns Promise that resolves when the loop exits
    */
   private async _runExecutionLoop(): Promise<void> {
-    while (this._shouldRun) {
-      try {
-        // Track if state changed at the start of this cycle
-        const stateChangedThisCycle = this._stateChanged;
+    this._insideExecutionLoop = true;
+    try {
+      while (this._shouldRun) {
+        try {
+          // Drain delayed executions first so completed delays run promptly and
+          // serially on the loop (same error/re-entrancy model as immediate actions).
+          const hadPendingDelayed = this._pendingDelayedExecutions.length > 0;
+          if (hadPendingDelayed) {
+            await this._drainPendingDelayedExecutions();
+          }
 
-        // Only evaluate triggers if state has changed (optimization for many triggers)
-        if (this._stateChanged) {
-          this._stateChanged = false;
-          const triggers = this._getSortedTriggers();
+          // Track if state changed at the start of this evaluation (after drain).
+          const stateChangedThisCycle = this._stateChanged;
+          const didWorkThisCycle = stateChangedThisCycle || hadPendingDelayed;
 
-          for (const trigger of triggers) {
-            if (!this._shouldRun) {
-              break; // Stop checking triggers if agent is stopping
+          // Only evaluate triggers if state has changed (optimization for many triggers)
+          if (this._stateChanged) {
+            this._cascadeDepth += 1;
+            if (this._cascadeDepth > this._maxCascadeDepth) {
+              this._stateChanged = false;
+              this._cascadeDepth = 0;
+              if (this._onError) {
+                this._onError(
+                  new AgentError(
+                    `Cascade exceeded maxCascadeDepth (${this._maxCascadeDepth})`,
+                    'CASCADE_LIMIT_EXCEEDED',
+                    { maxCascadeDepth: this._maxCascadeDepth },
+                  ),
+                );
+              }
+            } else {
+              this._stateChanged = false;
+              const triggers = this._getSortedTriggers();
+
+              for (const trigger of triggers) {
+                if (!this._shouldRun) {
+                  break; // Stop checking triggers if agent is stopping
+                }
+
+                await this._tryArmTrigger(trigger);
+              }
             }
+          } else if (!hadPendingDelayed) {
+            this._cascadeDepth = 0;
+          }
 
-            await this._checkAndExecuteTrigger(trigger);
+          // Resolve waitFor() predicates every cycle so in-place action mutations
+          // (which never go through State.set) are observed while running.
+          this._checkWaitForResolvers();
+
+          // Track quiet cycles for settle() functionality
+          if (didWorkThisCycle || this._hasPendingDelayedWork()) {
+            // Work happened or delays still open — not quiet yet.
+            this._consecutiveQuietCycles = 0;
+          } else {
+            this._consecutiveQuietCycles++;
+            this._checkSettleResolvers();
+          }
+
+          if (!this._shouldRun) {
+            break;
+          }
+
+          // Wait for next event or timeout (event-driven instead of fixed polling)
+          await this._waitForNextCycle();
+        } catch (error) {
+          // Log error but continue the loop
+          if (error instanceof Error && this._onError) {
+            this._onError(error);
           }
         }
-
-        // Resolve waitFor() predicates every cycle so in-place action mutations
-        // (which never go through State.set) are observed while running.
-        this._checkWaitForResolvers();
-
-        // Track quiet cycles for settle() functionality
-        if (stateChangedThisCycle) {
-          // State changed, so we did an evaluation. Reset quiet counter.
-          this._consecutiveQuietCycles = 0;
-        } else {
-          // State didn't change, so no evaluation happened. Increment quiet counter.
-          this._consecutiveQuietCycles++;
-          this._checkSettleResolvers();
-        }
-
-        if (!this._shouldRun) {
-          break;
-        }
-
-        // Wait for next event or timeout (event-driven instead of fixed polling)
-        await this._waitForNextCycle();
-      } catch (error) {
-        // Log error but continue the loop
-        if (error instanceof Error && this._onError) {
-          this._onError(error);
-        }
       }
+    } finally {
+      this._insideExecutionLoop = false;
     }
   }
 
   /**
-   * Checks if a trigger should fire and executes it if appropriate.
-   *
-   * This method:
-   * 1. Evaluates the trigger's check function
-   * 2. If check passes, evaluates all conditions
-   * 3. If conditions pass, applies delay if configured
-   * 4. Executes all actions
-   * 5. For one-time triggers (repeat: false), removes them after execution
-   * 6. Calls onError callback if any errors occur during execution
-   *
-   * @param trigger - The trigger to check and execute
+   * Drain the queue of triggers whose delay has completed.
    */
-  private async _checkAndExecuteTrigger(trigger: Trigger<TState>): Promise<void> {
+  private async _drainPendingDelayedExecutions(): Promise<void> {
+    while (this._pendingDelayedExecutions.length > 0 && this._shouldRun) {
+      const triggerId = this._pendingDelayedExecutions.shift()!;
+      const trigger = this._triggers.get(triggerId);
+      if (!trigger) {
+        continue;
+      }
+      await this._runTriggerActions(trigger);
+    }
+  }
+
+  /**
+   * Evaluate check/conditions and either run actions immediately or arm a
+   * non-blocking delay. Does not await delay timers.
+   */
+  private async _tryArmTrigger(trigger: Trigger<TState>): Promise<void> {
     try {
       if (!this._triggers.has(trigger.id)) {
         return;
@@ -1030,6 +1158,16 @@ export class Agent<TState = unknown> {
 
       // Skip disabled triggers without removing them
       if (this._disabledTriggers.has(trigger.id)) {
+        return;
+      }
+
+      // At most one delay may be pending per trigger
+      if (this._delayWaiters.has(trigger.id)) {
+        return;
+      }
+
+      // Already queued to run after a completed delay
+      if (this._pendingDelayedExecutions.includes(trigger.id)) {
         return;
       }
 
@@ -1066,14 +1204,31 @@ export class Agent<TState = unknown> {
       // left the emission pending for a future cycle.
       this._eventTriggerConsumers.get(trigger.id)?.();
 
-      // Handle delay before execution
+      // Non-blocking delay: schedule and return so other triggers can evaluate
       if (trigger.delay && trigger.delay > 0) {
-        const completed = await this._waitForDelay(trigger.id, trigger.delay);
-        if (!completed) {
-          return;
-        }
+        this._scheduleDelay(trigger.id, trigger.delay);
+        return;
       }
 
+      await this._runTriggerActions(trigger);
+    } catch (error) {
+      // Catch any unexpected errors and report them
+      if (this._onError) {
+        if (error instanceof Error) {
+          this._onError(error);
+        } else {
+          this._onError(new Error(String(error)));
+        }
+      }
+    }
+  }
+
+  /**
+   * Execute a trigger's actions with a fresh state snapshot and handle
+   * one-shot / maxFires bookkeeping.
+   */
+  private async _runTriggerActions(trigger: Trigger<TState>): Promise<void> {
+    try {
       if (
         !this._shouldRun ||
         !this._triggers.has(trigger.id) ||
@@ -1082,8 +1237,10 @@ export class Agent<TState = unknown> {
         return;
       }
 
-      // Execute all actions
-      const errors = await executeActions(trigger.actions, state);
+      // Always re-read state immediately before execution (not a pre-delay snapshot)
+      const state = this._state.get();
+      const ctx = this._buildActionContext(trigger.id);
+      const errors = await executeActions(trigger.actions, state, ctx);
 
       // Report any errors from action execution
       if (errors.length > 0 && this._onError) {
@@ -1109,7 +1266,6 @@ export class Agent<TState = unknown> {
         }
       }
     } catch (error) {
-      // Catch any unexpected errors and report them
       if (this._onError) {
         if (error instanceof Error) {
           this._onError(error);
@@ -1118,6 +1274,39 @@ export class Agent<TState = unknown> {
         }
       }
     }
+  }
+
+  /**
+   * Schedule a non-blocking delay. On completion, enqueues the trigger for
+   * action execution on the next loop cycle.
+   */
+  private _scheduleDelay(triggerId: string, delay: number): void {
+    // Guard: only one pending delay per trigger
+    if (this._delayWaiters.has(triggerId)) {
+      return;
+    }
+
+    const waiter: DelayWaiter = {
+      timer: setTimeout(() => {
+        this._removeDelayWaiter(triggerId, waiter);
+        if (!this._shouldRun || !this._triggers.has(triggerId)) {
+          return;
+        }
+        if (!this._pendingDelayedExecutions.includes(triggerId)) {
+          this._pendingDelayedExecutions.push(triggerId);
+        }
+        // Wake the loop to drain the pending execution; do not set _stateChanged
+        // solely for a delay completion (avoids unnecessary full re-evaluation).
+        this._wake();
+      }, delay),
+      resolve: () => {
+        // Used by cancel paths; completion path does not call resolve.
+      },
+    };
+
+    const waiters = new Set<DelayWaiter>();
+    waiters.add(waiter);
+    this._delayWaiters.set(triggerId, waiters);
   }
 
   /**
@@ -1174,25 +1363,6 @@ export class Agent<TState = unknown> {
     this._scheduleTimers.clear();
   }
 
-  private _waitForDelay(triggerId: string, delay: number): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      const waiter: DelayWaiter = {
-        timer: setTimeout(() => {
-          this._removeDelayWaiter(triggerId, waiter);
-          resolve(true);
-        }, delay),
-        resolve,
-      };
-
-      let waiters = this._delayWaiters.get(triggerId);
-      if (!waiters) {
-        waiters = new Set();
-        this._delayWaiters.set(triggerId, waiters);
-      }
-      waiters.add(waiter);
-    });
-  }
-
   private _removeDelayWaiter(triggerId: string, waiter: DelayWaiter): void {
     const waiters = this._delayWaiters.get(triggerId);
     if (!waiters) {
@@ -1234,6 +1404,10 @@ export class Agent<TState = unknown> {
    * the emission remains pending for that trigger; it will be re-evaluated
    * on subsequent wake-ups and fire when the conditions are satisfied (or
    * be dropped if the trigger is removed first).
+   *
+   * Emissions made while the agent is idle or stopped remain pending and are
+   * processed on the next `start()`. Already-consumed emissions are not re-fired
+   * across stop/start cycles.
    *
    * If no trigger is currently listening for the event, the call is a no-op.
    *

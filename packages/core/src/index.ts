@@ -20,6 +20,7 @@ export type {
   TriggerFn,
   ConditionFn,
   ActionFn,
+  ActionContext,
   AgentConfig,
   Trigger,
   LoggerFn,

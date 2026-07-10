@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { executeActions } from './index';
+import type { ActionContext } from './index';
 
 describe('executeActions', () => {
   describe('basic execution', () => {
@@ -36,6 +37,23 @@ describe('executeActions', () => {
 
       expect(action1).toHaveBeenCalledWith(state);
       expect(action2).toHaveBeenCalledWith(state);
+    });
+
+    it('should pass ActionContext as the second argument when provided', async () => {
+      const action = vi.fn();
+      const state = { count: 1 };
+      const controller = new AbortController();
+      const ctx: ActionContext = { signal: controller.signal, triggerId: 't1' };
+
+      await executeActions([action], state, ctx);
+
+      expect(action).toHaveBeenCalledWith(state, ctx);
+    });
+
+    it('should not pass a second argument when context is omitted', async () => {
+      const action = vi.fn();
+      await executeActions([action], { count: 0 });
+      expect(action.mock.calls[0]).toHaveLength(1);
     });
   });
 

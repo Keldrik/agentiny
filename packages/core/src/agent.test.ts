@@ -1919,7 +1919,9 @@ describe('Agent', () => {
           actions: [
             (state) => {
               action1();
-              state.count++;
+              // Delays are non-blocking and not same-pass as other triggers;
+              // use setState so the cascade schedules a new evaluation pass.
+              agent.setState({ count: state.count + 1 });
             },
           ],
           delay: 20,
@@ -3261,6 +3263,329 @@ describe('Agent', () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
       }
+    });
+  });
+
+  // ─── Critical correctness regressions (issues 1–6) ─────────────────────────
+
+  describe('critical correctness regressions', () => {
+    describe('stop/pause from inside an action (no deadlock)', () => {
+      it('resolves stop() when called from inside an action', async () => {
+        let stopResolved = false;
+        agent.when(
+          (state) => state.count > 0,
+          [
+            async () => {
+              await agent.stop();
+              stopResolved = true;
+            },
+          ],
+        );
+
+        await agent.start();
+        agent.setState({ count: 1 });
+
+        // Give the loop time to run the action and exit
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(stopResolved).toBe(true);
+        expect(agent.getStatus()).toBe('stopped');
+        expect(agent.isRunning()).toBe(false);
+      });
+
+      it('resolves pause() when called from inside an action', async () => {
+        let pauseResolved = false;
+        agent.when(
+          (state) => state.count > 0,
+          [
+            async () => {
+              await agent.pause();
+              pauseResolved = true;
+            },
+          ],
+        );
+
+        await agent.start();
+        agent.setState({ count: 1 });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(pauseResolved).toBe(true);
+        expect(agent.isPaused()).toBe(true);
+
+        await agent.resume();
+        await agent.stop();
+      });
+
+      it('aborts ActionContext.signal on stop so cooperative actions can exit', async () => {
+        let sawAbort = false;
+        agent.when(
+          (state) => state.count > 0,
+          [
+            async (_state, ctx) => {
+              await new Promise<void>((resolve) => {
+                if (!ctx) {
+                  resolve();
+                  return;
+                }
+                if (ctx.signal.aborted) {
+                  sawAbort = true;
+                  resolve();
+                  return;
+                }
+                ctx.signal.addEventListener(
+                  'abort',
+                  () => {
+                    sawAbort = true;
+                    resolve();
+                  },
+                  { once: true },
+                );
+              });
+            },
+          ],
+        );
+
+        await agent.start();
+        agent.setState({ count: 1 });
+        // Let the action start waiting on the signal
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await agent.stop();
+
+        expect(sawAbort).toBe(true);
+      });
+    });
+
+    describe('non-blocking delay and fresh state', () => {
+      it('does not block other triggers while a delayed trigger waits', async () => {
+        const order: string[] = [];
+
+        agent.addTrigger({
+          id: 'slow',
+          priority: 10,
+          check: (state) => state.count === 1,
+          actions: [
+            () => {
+              order.push('slow');
+            },
+          ],
+          delay: 80,
+        });
+
+        // One-shot so re-evaluation after the delay cannot re-fire "fast"
+        agent.addTrigger({
+          id: 'fast',
+          priority: 0,
+          check: (state) => state.count === 1,
+          actions: [
+            () => {
+              order.push('fast');
+            },
+          ],
+          repeat: false,
+        });
+
+        await agent.start();
+        agent.setState({ count: 1 });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        // Fast trigger must have run before the delayed one completes
+        expect(order).toContain('fast');
+        expect(order).not.toContain('slow');
+
+        await agent.settle();
+        expect(order).toEqual(['fast', 'slow']);
+        await agent.stop();
+      });
+
+      it('runs delayed actions against state after the delay, not a pre-delay snapshot', async () => {
+        let seen: { count: number } | undefined;
+
+        agent.addTrigger({
+          id: 'delayed-fresh',
+          check: (state) => state.count === 1,
+          actions: [
+            (state) => {
+              seen = state;
+            },
+          ],
+          delay: 40,
+        });
+
+        await agent.start();
+        agent.setState({ count: 1 });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        // Replace the root state while the delay is still open
+        agent.setState({ count: 99 });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        await agent.stop();
+
+        // check was for count === 1 at arm time; actions still receive the live root
+        expect(seen).toEqual({ count: 99 });
+      });
+
+      it('does not schedule a second delay while one is already pending', async () => {
+        const action = vi.fn();
+
+        agent.addTrigger({
+          id: 'once-delay',
+          check: () => true,
+          actions: [action],
+          delay: 50,
+        });
+
+        await agent.start();
+        agent.setState({ count: 1 });
+        agent.setState({ count: 2 });
+        agent.setState({ count: 3 });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        await agent.stop();
+
+        expect(action).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('event emissions preserved across start()', () => {
+      it('fires event listeners for emitEvent calls made while idle', async () => {
+        const action = vi.fn();
+        agent.on('ready', [action]);
+
+        agent.emitEvent('ready');
+        await agent.start();
+        await agent.settle();
+        await agent.stop();
+
+        expect(action).toHaveBeenCalledTimes(1);
+      });
+
+      it('fires event listeners for emitEvent calls made while stopped', async () => {
+        const action = vi.fn();
+        agent.on('ping', [action]);
+
+        await agent.start();
+        await agent.stop();
+
+        agent.emitEvent('ping');
+        await agent.start();
+        await agent.settle();
+        await agent.stop();
+
+        expect(action).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not re-fire already-consumed events after stop/start', async () => {
+        const action = vi.fn();
+        agent.on('once-ish', [action]);
+
+        await agent.start();
+        agent.emitEvent('once-ish');
+        await agent.settle();
+        expect(action).toHaveBeenCalledTimes(1);
+
+        await agent.stop();
+        await agent.start();
+        await agent.settle();
+        await agent.stop();
+
+        expect(action).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('maxCascadeDepth', () => {
+      it('rejects invalid maxCascadeDepth values', () => {
+        for (const maxCascadeDepth of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+          expect(() => new Agent({ initialState: { count: 0 }, maxCascadeDepth })).toThrow(
+            AgentError,
+          );
+        }
+      });
+
+      it('breaks unbounded cascades and reports CASCADE_LIMIT_EXCEEDED', async () => {
+        const onError = vi.fn();
+        const cascadeAgent = new Agent<{ count: number }>({
+          initialState: { count: 0 },
+          maxCascadeDepth: 5,
+          onError,
+        });
+
+        cascadeAgent.when(
+          (state) => state.count >= 0,
+          [
+            (state) => {
+              cascadeAgent.setState({ count: state.count + 1 });
+            },
+          ],
+        );
+
+        await cascadeAgent.start();
+        cascadeAgent.setState({ count: 1 });
+        await cascadeAgent.settle();
+        await cascadeAgent.stop();
+
+        expect(onError).toHaveBeenCalled();
+        const cascadeError = onError.mock.calls
+          .map((c) => c[0])
+          .find((e) => e instanceof AgentError && e.code === 'CASCADE_LIMIT_EXCEEDED');
+        expect(cascadeError).toBeDefined();
+        expect(cascadeAgent.getStatus()).toBe('stopped');
+        // count advanced but did not spin forever
+        expect(cascadeAgent.getState().count).toBeGreaterThan(1);
+        expect(cascadeAgent.getState().count).toBeLessThan(100);
+      });
+
+      it('does not trip the limit for short cascades', async () => {
+        const onError = vi.fn();
+        const shortAgent = new Agent<{ count: number }>({
+          initialState: { count: 0 },
+          maxCascadeDepth: 50,
+          onError,
+        });
+
+        shortAgent.when(
+          (state) => state.count > 0 && state.count < 3,
+          [
+            (state) => {
+              shortAgent.setState({ count: state.count + 1 });
+            },
+          ],
+        );
+
+        await shortAgent.start();
+        shortAgent.setState({ count: 1 });
+        await shortAgent.settle();
+        await shortAgent.stop();
+
+        expect(shortAgent.getState().count).toBe(3);
+        const cascadeErrors = onError.mock.calls.filter(
+          (c) => c[0] instanceof AgentError && c[0].code === 'CASCADE_LIMIT_EXCEEDED',
+        );
+        expect(cascadeErrors).toHaveLength(0);
+      });
+    });
+
+    describe('wake race under large idleTimeout', () => {
+      it('evaluates state changes promptly even with a large idleTimeout', async () => {
+        const action = vi.fn();
+        const slowAgent = new Agent<{ count: number }>({
+          initialState: { count: 0 },
+          idleTimeout: 5000,
+        });
+
+        slowAgent.when((state) => state.count >= 2, [action]);
+
+        await slowAgent.start();
+        slowAgent.setState({ count: 1 });
+        // Small yield so the loop can enter an idle wait
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const started = Date.now();
+        slowAgent.setState({ count: 2 });
+        await slowAgent.settle();
+        const elapsed = Date.now() - started;
+        await slowAgent.stop();
+
+        expect(action).toHaveBeenCalled();
+        // Must not wait for the full 5s idle timeout
+        expect(elapsed).toBeLessThan(500);
+      });
     });
   });
 });
