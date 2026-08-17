@@ -1,41 +1,57 @@
 # @agentiny/openai
 
-OpenAI integration adapter for [@agentiny/core](https://www.npmjs.com/package/@agentiny/core). Enables agents to interact with OpenAI's chat completion API through the agenTiny agent framework.
+OpenAI adapter for [@agentiny/core](https://www.npmjs.com/package/@agentiny/core). Turns a state-in / state-out Chat Completions call into an agent `ActionFn`.
 
-This adapter allows you to build reactive agents that can call OpenAI's LLMs as part of trigger-condition-action flows, enabling sophisticated multi-step AI workflows.
+## Migration from 0.1.x
 
-## About agenTiny
+`0.2.0` is a breaking change:
 
-**agenTiny** is a lightweight TypeScript agent framework (< 5KB gzipped) for building reactive agents using trigger-condition-action flows. It features:
+- `createOpenAIAction(config, options)` is now a **single options object**.
+- `onResponse` receives a result object. Use `result.text` for the previous string.
+- `maxTokens` is sent as `max_completion_tokens` (required by GPT-5-class models).
+- The default model is the `gpt-5-nano` alias, not a dated snapshot.
 
-- ⚡ Zero runtime dependencies (for core)
-- 🎯 Type-safe state management
-- 🔄 Full async/await support
-- 🎨 Clean, reactive trigger system
+```typescript
+// 0.1.x
+createOpenAIAction(
+  { apiKey: process.env.OPENAI_API_KEY! },
+  {
+    prompt: (state) => state.input,
+    onResponse: (text, state) => {
+      state.output = text;
+    },
+  },
+);
 
-For more information, see [agenTiny on npm](https://www.npmjs.com/package/@agentiny/core) or the [GitHub repository](https://github.com/Keldrik/agentiny).
+// 0.2.0
+createOpenAIAction({
+  apiKey: process.env.OPENAI_API_KEY,
+  prompt: (state) => state.input,
+  onResponse: (result, state) => {
+    state.output = result.text;
+  },
+});
+```
 
 ## Installation
 
 ```bash
-# Install @agentiny/core and this adapter
 npm install @agentiny/core @agentiny/openai openai
 ```
 
 ### Requirements
 
-- **Node.js** 18+ (or equivalent runtime with top-level await support)
-- **@agentiny/core** ^0.1.2
-- **openai** ^6.5.0 (tested with 6.5.0)
+- **Node.js** 18+ (Node 22+ if your app installs `openai` 7.x)
+- **@agentiny/core** (peer)
+- **openai** `^6.5.0 || ^7.0.0` (peer, install separately)
+- **zod** `^3.25 || ^4.0` (optional peer, only if you pass a Zod schema)
 
-### Other Adapters
+### Other adapters
 
-If you prefer other LLM providers, agenTiny also provides:
+- [@agentiny/anthropic](https://www.npmjs.com/package/@agentiny/anthropic)
+- [@agentiny/gemini](https://www.npmjs.com/package/@agentiny/gemini)
 
-- [@agentiny/anthropic](https://www.npmjs.com/package/@agentiny/anthropic) - Claude models via Anthropic
-- [@agentiny/gemini](https://www.npmjs.com/package/@agentiny/gemini) - Google Gemini models
-
-## Quick Start
+## Quick start
 
 ```typescript
 import { createOpenAIAction } from '@agentiny/openai';
@@ -50,19 +66,14 @@ const agent = new Agent<AnalysisState>({
   initialState: { data: '' },
 });
 
-// Create an OpenAI action
-const analyzeAction = createOpenAIAction(
-  { apiKey: process.env.OPENAI_API_KEY! },
-  {
-    prompt: (state) => `Analyze this: ${state.data}`,
-    onResponse: (response, state) => {
-      state.analysis = response;
-      console.log('Analysis:', response);
-    },
+const analyzeAction = createOpenAIAction({
+  apiKey: process.env.OPENAI_API_KEY,
+  prompt: (state) => `Analyze this: ${state.data}`,
+  onResponse: (result, state) => {
+    state.analysis = result.text;
   },
-);
+});
 
-// Add trigger to use the action
 agent.addTrigger({
   id: 'analyze-trigger',
   check: (state) => !!state.data && !state.analysis,
@@ -70,113 +81,163 @@ agent.addTrigger({
   repeat: false,
 });
 
-// Start agent and set data
 await agent.start();
 agent.setState({ data: 'What is TypeScript?' });
 ```
 
 ## API
 
-### `createOpenAIAction<TState>(config, options)`
+### `createOpenAIAction<TState, TParsed>(options)`
 
-Creates an action function that calls the OpenAI API.
+Creates an `ActionFn<TState>` that calls OpenAI Chat Completions.
 
-#### Parameters
+The client is created once in the factory (or taken from `options.client`) and reused. When the agent passes an `ActionContext`, its abort signal is forwarded to the SDK.
 
-- **config** - OpenAI configuration object
-  - `apiKey` (string, required) - OpenAI API key
-  - `model` (string, optional) - Model to use (default: `gpt-3.5-turbo`)
-  - `baseURL` (string, optional) - Custom API endpoint URL
+#### Client
 
-- **options** - Action options object
-  - `prompt` (function, required) - Function that generates prompt from state: `(state: TState) => string`
-  - `onResponse` (function, required) - Callback when response arrives: `(response: string, state: TState) => void`
-  - `maxTokens` (number, optional) - Maximum tokens in response
-  - `temperature` (number, optional) - Sampling temperature (0-2)
+- `client` (optional) — Existing `OpenAI` instance or compatible client (`AzureOpenAI`, a mock, a proxy wrapper). When set, `apiKey` and `baseURL` are ignored.
+- `apiKey` (optional) — Used when `client` is omitted. The SDK also reads `OPENAI_API_KEY`.
+- `baseURL` (optional) — Custom endpoint. The SDK also reads `OPENAI_BASE_URL`.
+- `model` (optional) — Default: `gpt-5-nano`.
 
-#### Returns
+#### Prompt (exactly one of `prompt` or `messages`)
 
-An `ActionFn<TState>` that can be used in agent triggers.
+- `prompt` — `(state) => string` turned into a single user message.
+- `messages` — `(state) => OpenAIMessage[]` for multi-turn history stored on state.
+- `system` — `string` or `(state) => string`, prepended as a system message.
+
+#### Result
+
+- `onResponse` — `(result, state) => void | Promise<void>`. Always receives:
+
+  | Field          | Meaning                                                                      |
+  | -------------- | ---------------------------------------------------------------------------- |
+  | `text`         | Assistant text (empty string if missing)                                     |
+  | `data`         | `text` when no `schema`; parsed value when `schema` is set                   |
+  | `usage`        | `{ promptTokens, completionTokens, totalTokens }` when the API returns usage |
+  | `finishReason` | API `finish_reason`, or `null`                                               |
+  | `model`        | Model reported by the API (falls back to the requested model)                |
+  | `raw`          | The completion or last stream chunk                                          |
+
+- `onDelta` — `(delta, state) => void | Promise<void>`. Opts the request into streaming. Each non-empty text delta is emitted; `onResponse` still runs once at the end.
+
+#### Generation
+
+- `maxTokens` — Sent as `max_completion_tokens`. Never sent as the deprecated `max_tokens`.
+- `temperature` — Optional passthrough. GPT-5-class models may reject it.
+- `schema` — JSON Schema object, or a Zod-like object with `safeParse`. Enables structured output; `result.data` is the parsed value.
+- `schemaName` — Name sent with JSON Schema structured output. Default: `response`.
 
 ## Examples
 
-### Basic Analysis
+### Injected client
+
+Share one client across actions (Azure, custom `fetch`, org/project, tests):
 
 ```typescript
+import { OpenAI } from 'openai';
 import { createOpenAIAction } from '@agentiny/openai';
-import { Agent } from '@agentiny/core';
 
-interface TextState {
-  input: string;
-  output?: string;
-}
+const client = new OpenAI();
 
-const agent = new Agent<TextState>({
-  initialState: { input: 'Hello world' },
+const action = createOpenAIAction({
+  client,
+  prompt: (state) => state.input,
+  onResponse: (result, state) => {
+    state.output = result.text;
+  },
+});
+```
+
+### System prompt and message history
+
+```typescript
+const reply = createOpenAIAction({
+  client,
+  system: 'You are terse.',
+  messages: (state) => state.history,
+  onResponse: (result, state) => {
+    state.history.push({ role: 'assistant', content: result.text });
+  },
+});
+```
+
+### Temperature and max tokens
+
+```typescript
+const creative = createOpenAIAction({
+  apiKey: process.env.OPENAI_API_KEY,
+  model: 'gpt-4.1-mini',
+  prompt: (state) => `Write a short story about: ${state.topic}`,
+  temperature: 1.2,
+  maxTokens: 500,
+  onResponse: (result, state) => {
+    state.story = result.text;
+  },
+});
+```
+
+GPT-5-class models (`gpt-5-nano`, `gpt-5.6-*`, and other reasoning models) often reject `temperature`. Omit it unless you know the model accepts it.
+
+### Structured output
+
+JSON Schema:
+
+```typescript
+const extract = createOpenAIAction({
+  prompt: (state) => state.email,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      tasks: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['tasks'],
+  },
+  schemaName: 'tasks',
+  onResponse: (result, state) => {
+    state.tasks = result.data.tasks;
+  },
+});
+```
+
+Zod (optional peer — install `zod` yourself):
+
+```typescript
+import { z } from 'zod';
+
+const TaskList = z.object({
+  tasks: z.array(z.string()),
 });
 
-agent.addTrigger({
-  id: 'translate',
-  check: (state) => !!state.input && !state.output,
-  actions: [
-    createOpenAIAction(
-      { apiKey: process.env.OPENAI_API_KEY! },
-      {
-        prompt: (state) => `Translate to French: ${state.input}`,
-        onResponse: (response, state) => {
-          state.output = response;
-        },
-      },
-    ),
-  ],
+const extract = createOpenAIAction({
+  prompt: (state) => state.email,
+  schema: TaskList,
+  onResponse: (result, state) => {
+    state.tasks = result.data.tasks;
+  },
 });
-
-await agent.start();
 ```
 
-### Using Different Models
+### Streaming into state
 
 ```typescript
-import { createOpenAIAction } from '@agentiny/openai';
-
-const advancedAnalysis = createOpenAIAction(
-  {
-    apiKey: process.env.OPENAI_API_KEY!,
-    model: 'gpt-5-2025-08-07',
+const stream = createOpenAIAction({
+  prompt: (state) => state.prompt,
+  onDelta: (delta, state) => {
+    state.draft += delta;
   },
-  {
-    prompt: (state) => `Advanced analysis: ${state.data}`,
-    onResponse: (response, state) => {
-      state.analysis = response;
-    },
+  onResponse: (result, state) => {
+    state.draft = result.text;
   },
-);
+});
 ```
 
-### With Temperature and Max Tokens
+`onDelta` plus `schema` is allowed: deltas are the raw text (usually JSON), and `result.data` is parsed after the stream ends.
+
+### Chained triggers
 
 ```typescript
-import { createOpenAIAction } from '@agentiny/openai';
-
-const creativeResponse = createOpenAIAction(
-  { apiKey: process.env.OPENAI_API_KEY! },
-  {
-    prompt: (state) => `Write a creative story about: ${state.topic}`,
-    onResponse: (response, state) => {
-      state.story = response;
-    },
-    temperature: 1.5, // More creative (0-2 range)
-    maxTokens: 500, // Limit response length
-  },
-);
-```
-
-### Chained Actions with Multiple Stages
-
-```typescript
-import { createOpenAIAction } from '@agentiny/openai';
-import { Agent } from '@agentiny/core';
-
 interface ProcessState {
   text: string;
   summary?: string;
@@ -187,86 +248,55 @@ const agent = new Agent<ProcessState>({
   initialState: { text: 'Your text here' },
 });
 
-// Stage 1: Summarize
-const summarize = createOpenAIAction(
-  { apiKey: process.env.OPENAI_API_KEY! },
-  {
-    prompt: (state) => `Summarize: ${state.text}`,
-    onResponse: (response, state) => {
-      state.summary = response;
-    },
+const summarize = createOpenAIAction({
+  apiKey: process.env.OPENAI_API_KEY,
+  prompt: (state) => `Summarize: ${state.text}`,
+  onResponse: (result, state) => {
+    state.summary = result.text;
   },
-);
+});
 
-// Stage 2: Analyze sentiment
-const analyzeSentiment = createOpenAIAction(
-  { apiKey: process.env.OPENAI_API_KEY! },
-  {
-    prompt: (state) => `Analyze sentiment of: ${state.summary}`,
-    onResponse: (response, state) => {
-      state.sentiment = response;
-    },
+const analyzeSentiment = createOpenAIAction({
+  apiKey: process.env.OPENAI_API_KEY,
+  prompt: (state) => `Analyze sentiment of: ${state.summary}`,
+  onResponse: (result, state) => {
+    state.sentiment = result.text;
   },
-);
+});
 
-// First trigger: summarize when text is provided
 agent.addTrigger({
   id: 'summarize-trigger',
   check: (state) => !!state.text && !state.summary,
   actions: [summarize],
 });
 
-// Second trigger: analyze after summarization
 agent.addTrigger({
   id: 'analyze-trigger',
   check: (state) => !!state.summary && !state.sentiment,
   actions: [analyzeSentiment],
 });
-
-await agent.start();
 ```
 
-### Custom API Endpoint
+Prefer one shared `client` when several actions hit the same account.
+
+### Custom endpoint
 
 ```typescript
-import { createOpenAIAction } from '@agentiny/openai';
-
-const customAction = createOpenAIAction(
-  {
-    apiKey: process.env.CUSTOM_API_KEY!,
-    baseURL: 'https://your-custom-openai-endpoint.com/v1',
+const custom = createOpenAIAction({
+  apiKey: process.env.CUSTOM_API_KEY,
+  baseURL: 'https://your-openai-compatible-endpoint.example/v1',
+  prompt: (state) => `Process: ${state.data}`,
+  onResponse: (result, state) => {
+    state.result = result.text;
   },
-  {
-    prompt: (state) => `Process: ${state.data}`,
-    onResponse: (response, state) => {
-      state.result = response;
-    },
-  },
-);
-```
-
-## Error Handling
-
-Errors from the OpenAI API are propagated and can be caught:
-
-```typescript
-agent.addTrigger({
-  id: 'api-call',
-  check: (state) => !!state.input,
-  actions: [
-    createOpenAIAction(
-      { apiKey: process.env.OPENAI_API_KEY! },
-      {
-        prompt: (state) => state.input,
-        onResponse: (response, state) => {
-          state.output = response;
-        },
-      },
-    ),
-  ],
 });
+```
 
-// Capture errors via agent's onError callback
+### Errors and cancellation
+
+API errors and abort errors propagate to the agent's `onError`. Long-running calls stop when the agent is paused or stopped because `ctx.signal` is forwarded.
+
+```typescript
 const agent = new Agent<TextState>({
   initialState: { input: '' },
   onError: (error) => {
@@ -275,90 +305,45 @@ const agent = new Agent<TextState>({
 });
 ```
 
-## Type Safety
+For retries, wrap the action with `@agentiny/utils` `withRetry`.
 
-The adapter provides full TypeScript support with type-safe state handling:
+## Best practices
 
-```typescript
-import { createOpenAIAction } from '@agentiny/openai';
-import type { ActionFn } from '@agentiny/core';
-
-interface DataState {
-  input: string;
-  processed?: string;
-  score?: number;
-}
-
-// TypeScript ensures prompt and onResponse match state type
-const action: ActionFn<DataState> = createOpenAIAction(
-  { apiKey: process.env.OPENAI_API_KEY! },
-  {
-    prompt: (state) => {
-      // state is typed as DataState
-      return `Process: ${state.input}`;
-    },
-    onResponse: (response, state) => {
-      // state is typed as DataState
-      state.processed = response;
-    },
-  },
-);
-```
-
-## Best Practices
-
-1. **Use environment variables for API keys** - Never hardcode secrets
-2. **Choose appropriate models** - Use `gpt-3.5-turbo` for speed, `gpt-4` for quality
-3. **Set temperature appropriately** - Lower (0.2-0.7) for deterministic tasks, higher (0.8-1.5) for creative
-4. **Limit max tokens** - Set reasonable limits to control costs
-5. **Handle errors** - Use agent's `onError` callback for error handling
-6. **Test thoroughly** - Write tests for your state transformations
+1. Keep API keys in the environment; pass a shared `client` when you have more than one action.
+2. Use a current model alias (`gpt-5-nano`, or a newer cheap/fast model) unless you need a pinned snapshot.
+3. Set `maxTokens` to cap cost. Do not rely on `temperature` on GPT-5-class models.
+4. Handle failures with the agent's `onError`. Observe `ctx.signal` is already done for you.
+5. Use `schema` when the next trigger needs structured state, not a blob of prose.
 
 ## Troubleshooting
 
 ### "API key is missing or invalid"
 
-- Ensure `OPENAI_API_KEY` environment variable is set with a valid API key
-- Check that your API key has the necessary permissions
-- Verify you're using an API key (not your account password)
+Set `OPENAI_API_KEY`, pass `apiKey`, or inject a `client` that already has credentials.
 
-### "Error: Cannot find module 'openai'"
+### "Cannot find module 'openai'"
 
-- Ensure `openai` is installed: `npm install openai`
-- Remember that `openai` is a peer dependency and must be installed separately
+`openai` is a peer dependency: `npm install openai`.
 
-### "Model not found" error
+### "Model not found"
 
-- Verify the model name is correct and available in your OpenAI account
+The default is `gpt-5-nano`. Check that the name exists on your account, or set `model`.
 
-### "Rate limit exceeded"
+### Temperature or `max_tokens` errors on GPT-5 models
 
-- Implement retry logic with exponential backoff
-- Consider using `@agentiny/utils` for the `withRetry` wrapper
-- Spread out API calls using the `delay` trigger option
+This adapter sends `max_completion_tokens`. If you still see sampling-parameter errors, omit `temperature`.
 
-## API Reference
+### Rate limit exceeded
 
-For detailed API documentation:
-
-- Check [@agentiny/core documentation](https://www.npmjs.com/package/@agentiny/core) for Agent API
-- See [OpenAI API Reference](https://platform.openai.com/docs/api-reference) for model details
-
-## Contributing
-
-Contributions are welcome! Please ensure:
-
-- Code passes TypeScript strict mode checks
-- Oxlint checks pass
-- Changes are well-documented
+Wrap the action with `withRetry` from `@agentiny/utils`, or space calls out with a trigger `delay`.
 
 ## License
 
 MIT
 
-## See Also
+## See also
 
-- [@agentiny/core](https://www.npmjs.com/package/@agentiny/core) - Core agent framework
-- [@agentiny/anthropic](https://www.npmjs.com/package/@agentiny/anthropic) - Anthropic adapter
-- [@agentiny/gemini](https://www.npmjs.com/package/@agentiny/gemini) - Google Gemini adapter
-- [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
+- [@agentiny/core](https://www.npmjs.com/package/@agentiny/core)
+- [@agentiny/anthropic](https://www.npmjs.com/package/@agentiny/anthropic)
+- [@agentiny/gemini](https://www.npmjs.com/package/@agentiny/gemini)
+- [OpenAI API reference](https://platform.openai.com/docs/api-reference)

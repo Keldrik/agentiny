@@ -85,12 +85,14 @@ agent.at('00:00', [resetCounters], { once: true });
 
 ```typescript
 import { Agent } from '@agentiny/core';
-import { createAnthropicAction } from '@agentiny/anthropic';
+import { createOpenAIAction } from '@agentiny/openai';
 
-const aiAction = createAnthropicAction({
+const aiAction = createOpenAIAction({
+  apiKey: process.env.OPENAI_API_KEY,
   prompt: (state) => `Respond to: ${state.userInput}`,
-  model: 'claude-3-sonnet-20240229',
-  apiKey: process.env.ANTHROPIC_API_KEY,
+  onResponse: (result, state) => {
+    state.reply = result.text;
+  },
 });
 
 const agent = new Agent({ initialState: { userInput: '' } });

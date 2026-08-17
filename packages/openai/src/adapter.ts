@@ -1,144 +1,384 @@
-import type { ActionFn } from '@agentiny/core';
+import { OpenAI } from 'openai';
+import type { ActionContext, ActionFn } from '@agentiny/core';
+import { assertPromptSource, buildMessages } from './messages';
+import { buildResponseFormat, isZodLike, parseStructured } from './schema';
+import type {
+  ChatCompletionCreateRequest,
+  ChatCompletionRequestOptions,
+  OpenAIActionOptions,
+  OpenAIActionResult,
+  OpenAICompatibleClient,
+  OpenAIUsage,
+} from './types';
 
-// Type-only import for the OpenAI class to support proper TypeScript checking
-type OpenAIType = typeof import('openai').OpenAI;
+const DEFAULT_MODEL = 'gpt-5-nano';
+const DEFAULT_SCHEMA_NAME = 'response';
 
-/**
- * OpenAI configuration
- */
-export interface OpenAIConfig {
-  /**
-   * OpenAI API key
-   */
-  apiKey: string;
-  /**
-   * Model to use (default: gpt-5-nano-2025-08-07)
-   */
-  model?: string;
-  /**
-   * Base URL for API
-   */
-  baseURL?: string;
-}
+type ActionClient = OpenAI | OpenAICompatibleClient;
 
 /**
- * Options for OpenAI action
+ * Creates an OpenAI action for an agenTiny agent.
+ *
+ * The OpenAI client is created once (or taken from `options.client`) and reused
+ * on every invocation. When the agent passes an `ActionContext`, its abort
+ * signal is forwarded to the SDK.
  */
-export interface OpenAIOptions<TState = unknown> {
-  /**
-   * Function to generate prompt from state
-   */
-  prompt: (state: TState) => string;
-  /**
-   * Callback when response is received
-   */
-  onResponse: (response: string, state: TState) => void;
-  /**
-   * Maximum tokens in response
-   */
-  maxTokens?: number;
-  /**
-   * Temperature for model (0-2)
-   */
-  temperature?: number;
-}
-
-/**
- * Creates an OpenAI action for the agent
- *
- * Creates a reusable action function that calls the OpenAI API with a message
- * generated from the agent's state. The response is passed to the onResponse
- * callback for state updates or other side effects.
- *
- * @template TState - The type of the agent's state
- * @param config - OpenAI configuration including API key and optional model/baseURL
- * @param options - Action options including prompt generator and response callback
- * @returns Action function that calls OpenAI API and updates state via callback
- * @throws {Error} When OpenAI API call fails
- *
- * @example
- * ```typescript
- * import { createOpenAIAction } from '@agentiny/openai';
- * import { Agent } from '@agentiny/core';
- *
- * interface AnalysisState {
- *   data: string;
- *   analysis?: string;
- * }
- *
- * const agent = new Agent<AnalysisState>({ initialState: { data: '' } });
- *
- * agent.addTrigger({
- *   id: 'analyze',
- *   check: (state) => !!state.data && !state.analysis,
- *   actions: [
- *     createOpenAIAction(
- *       { apiKey: process.env.OPENAI_API_KEY! },
- *       {
- *         prompt: (state) => `Analyze this data: ${state.data}`,
- *         onResponse: (response, state) => {
- *           state.analysis = response;
- *         }
- *       }
- *     )
- *   ]
- * });
- * ```
- */
-export function createOpenAIAction<TState = unknown>(
-  config: OpenAIConfig,
-  options: OpenAIOptions<TState>,
+export function createOpenAIAction<TState = unknown, TParsed = string>(
+  options: OpenAIActionOptions<TState, TParsed>,
 ): ActionFn<TState> {
-  return async (state: TState): Promise<void> => {
-    // Dynamic import to handle module resolution in different environments
-    const { OpenAI } = (await import('openai')) as { OpenAI: OpenAIType };
+  assertPromptSource(options);
 
-    const model = config.model ?? 'gpt-5-nano-2025-08-07';
-    const prompt = options.prompt(state);
+  const client: ActionClient =
+    options.client ??
+    new OpenAI({
+      apiKey: options.apiKey,
+      baseURL: options.baseURL,
+    });
 
-    // Initialize OpenAI client with provided configuration
-    const clientConfig: { apiKey: string; baseURL?: string } = {
-      apiKey: config.apiKey,
-    };
+  return async (state: TState, ctx?: ActionContext): Promise<void> => {
+    const model = options.model ?? DEFAULT_MODEL;
+    const schemaName = options.schemaName ?? DEFAULT_SCHEMA_NAME;
+    const requestOptions = requestOptionsFrom(ctx);
+    const body = buildRequestBody(options, state, model, schemaName);
 
-    if (config.baseURL !== undefined) {
-      clientConfig.baseURL = config.baseURL;
+    if (options.onDelta !== undefined) {
+      const streamResult = await completeStream(
+        client,
+        { ...body, stream: true, stream_options: { include_usage: true } },
+        requestOptions,
+        options.onDelta,
+        state,
+        model,
+      );
+
+      const result = toActionResult<TParsed>(
+        streamResult.text,
+        options.schema,
+        streamResult.usage,
+        streamResult.finishReason,
+        streamResult.model,
+        streamResult.raw,
+      );
+      await options.onResponse(result, state);
+      return;
     }
 
-    const client = new OpenAI(clientConfig);
+    if (options.schema !== undefined && isZodLike(options.schema) && hasParse(client)) {
+      const parsedViaHelper = await tryParseWithZodHelper(
+        client,
+        body,
+        requestOptions,
+        options.schema,
+        schemaName,
+      );
 
-    // Build request parameters
-    const requestParams: {
-      model: string;
-      messages: { role: 'user' | 'assistant' | 'system'; content: string }[];
-      max_tokens?: number;
-      temperature?: number;
-    } = {
-      model,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    };
-
-    // Add optional parameters if provided
-    if (options.maxTokens !== undefined) {
-      requestParams.max_tokens = options.maxTokens;
+      if (parsedViaHelper !== undefined) {
+        const result = toActionResult<TParsed>(
+          parsedViaHelper.text,
+          options.schema,
+          parsedViaHelper.usage,
+          parsedViaHelper.finishReason,
+          parsedViaHelper.model,
+          parsedViaHelper.raw,
+          parsedViaHelper.parsed,
+        );
+        await options.onResponse(result, state);
+        return;
+      }
     }
 
-    if (options.temperature !== undefined) {
-      requestParams.temperature = options.temperature;
-    }
-
-    // Call OpenAI API
-    const response = await client.chat.completions.create(requestParams);
-
-    // Extract message content from response
-    const messageContent = response.choices[0]?.message.content ?? '';
-
-    // Call the response callback with the extracted content
-    options.onResponse(messageContent, state);
+    const response = await callCreate(client, body, requestOptions);
+    const extracted = extractCompletion(response, model);
+    const result = toActionResult<TParsed>(
+      extracted.text,
+      options.schema,
+      extracted.usage,
+      extracted.finishReason,
+      extracted.model,
+      response,
+      extracted.parsed,
+    );
+    await options.onResponse(result, state);
   };
+}
+
+function buildRequestBody<TState, TParsed>(
+  options: OpenAIActionOptions<TState, TParsed>,
+  state: TState,
+  model: string,
+  schemaName: string,
+): ChatCompletionCreateRequest {
+  const body: ChatCompletionCreateRequest = {
+    model,
+    messages: buildMessages(options, state),
+  };
+
+  if (options.maxTokens !== undefined) {
+    body.max_completion_tokens = options.maxTokens;
+  }
+
+  if (options.temperature !== undefined) {
+    body.temperature = options.temperature;
+  }
+
+  const responseFormat = buildResponseFormat(options.schema, schemaName);
+  if (responseFormat !== undefined) {
+    body.response_format = responseFormat;
+  }
+
+  return body;
+}
+
+function requestOptionsFrom(ctx?: ActionContext): ChatCompletionRequestOptions | undefined {
+  if (ctx?.signal === undefined) {
+    return undefined;
+  }
+  return { signal: ctx.signal };
+}
+
+function toActionResult<TParsed>(
+  text: string,
+  schema: unknown,
+  usage: OpenAIUsage | undefined,
+  finishReason: string | null,
+  model: string,
+  raw: unknown,
+  parsedFromApi?: unknown,
+): OpenAIActionResult<TParsed> {
+  const data = resolveData<TParsed>(text, schema, parsedFromApi);
+  const result: OpenAIActionResult<TParsed> = {
+    text,
+    data,
+    finishReason,
+    model,
+    raw,
+  };
+
+  if (usage !== undefined) {
+    result.usage = usage;
+  }
+
+  return result;
+}
+
+function resolveData<TParsed>(text: string, schema: unknown, parsedFromApi: unknown): TParsed {
+  if (schema === undefined) {
+    return text as TParsed;
+  }
+
+  if (parsedFromApi !== undefined && parsedFromApi !== null) {
+    return parsedFromApi as TParsed;
+  }
+
+  return parseStructured<TParsed>(text, schema);
+}
+
+async function tryParseWithZodHelper(
+  client: ActionClient,
+  body: ChatCompletionCreateRequest,
+  requestOptions: ChatCompletionRequestOptions | undefined,
+  schema: unknown,
+  schemaName: string,
+): Promise<ExtractedCompletion | undefined> {
+  if (!hasParse(client)) {
+    return undefined;
+  }
+
+  let responseFormat: unknown;
+  try {
+    const { zodResponseFormat } = await import('openai/helpers/zod');
+    responseFormat = zodResponseFormat(schema as never, schemaName);
+  } catch {
+    return undefined;
+  }
+
+  const response = await callParse(
+    client,
+    { ...body, response_format: responseFormat },
+    requestOptions,
+  );
+
+  return extractCompletion(response, body.model);
+}
+
+interface ExtractedCompletion {
+  text: string;
+  parsed?: unknown;
+  usage?: OpenAIUsage;
+  finishReason: string | null;
+  model: string;
+  raw: unknown;
+}
+
+function extractCompletion(response: unknown, fallbackModel: string): ExtractedCompletion {
+  const record = asRecord(response);
+  const choice = firstChoice(record);
+  const message = asRecord(choice?.['message']);
+  const text = typeof message?.['content'] === 'string' ? message['content'] : '';
+  const finishReason =
+    typeof choice?.['finish_reason'] === 'string' ? choice['finish_reason'] : null;
+  const model = typeof record?.['model'] === 'string' ? record['model'] : fallbackModel;
+  const extracted: ExtractedCompletion = {
+    text,
+    finishReason,
+    model,
+    raw: response,
+  };
+
+  if (message !== undefined && 'parsed' in message) {
+    extracted.parsed = message['parsed'];
+  }
+
+  const usage = mapUsage(record?.['usage']);
+  if (usage !== undefined) {
+    extracted.usage = usage;
+  }
+
+  return extracted;
+}
+
+function hasParse(client: ActionClient): client is ActionClient & {
+  chat: {
+    completions: { parse: NonNullable<OpenAICompatibleClient['chat']['completions']['parse']> };
+  };
+} {
+  return typeof client.chat.completions.parse === 'function';
+}
+
+async function callCreate(
+  client: ActionClient,
+  body: ChatCompletionCreateRequest,
+  requestOptions: ChatCompletionRequestOptions | undefined,
+): Promise<unknown> {
+  return client.chat.completions.create(body as never, requestOptions);
+}
+
+async function callParse(
+  client: ActionClient,
+  body: ChatCompletionCreateRequest,
+  requestOptions: ChatCompletionRequestOptions | undefined,
+): Promise<unknown> {
+  if (!hasParse(client)) {
+    throw new Error('createOpenAIAction: client does not support chat.completions.parse');
+  }
+  return client.chat.completions.parse(body as never, requestOptions);
+}
+
+async function completeStream<TState>(
+  client: ActionClient,
+  body: ChatCompletionCreateRequest,
+  requestOptions: ChatCompletionRequestOptions | undefined,
+  onDelta: (delta: string, state: TState) => void | Promise<void>,
+  state: TState,
+  fallbackModel: string,
+): Promise<ExtractedCompletion> {
+  const response = await callCreate(client, body, requestOptions);
+  const stream = asAsyncIterable(response);
+
+  let text = '';
+  let finishReason: string | null = null;
+  let model = fallbackModel;
+  let usage: OpenAIUsage | undefined;
+  let lastChunk: unknown = response;
+
+  for await (const chunk of stream) {
+    lastChunk = chunk;
+    const record = asRecord(chunk);
+    const choice = firstChoice(record);
+    const delta = asRecord(choice?.['delta']);
+    const content = delta?.['content'];
+
+    if (typeof content === 'string' && content.length > 0) {
+      text += content;
+      await onDelta(content, state);
+    }
+
+    if (typeof choice?.['finish_reason'] === 'string') {
+      finishReason = choice['finish_reason'];
+    }
+
+    if (typeof record?.['model'] === 'string') {
+      model = record['model'];
+    }
+
+    const chunkUsage = mapUsage(record?.['usage']);
+    if (chunkUsage !== undefined) {
+      usage = chunkUsage;
+    }
+  }
+
+  const extracted: ExtractedCompletion = {
+    text,
+    finishReason,
+    model,
+    raw: lastChunk,
+  };
+
+  if (usage !== undefined) {
+    extracted.usage = usage;
+  }
+
+  return extracted;
+}
+
+function asAsyncIterable(value: unknown): AsyncIterable<unknown> {
+  if (isAsyncIterable(value)) {
+    return value;
+  }
+
+  throw new Error('createOpenAIAction: expected a streaming response from the OpenAI client');
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Symbol.asyncIterator in value &&
+    typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === 'function'
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === 'object' && value !== null) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function firstChoice(
+  record: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const choices = record?.['choices'];
+  if (!Array.isArray(choices) || choices.length === 0) {
+    return undefined;
+  }
+  return asRecord(choices[0]);
+}
+
+function mapUsage(value: unknown): OpenAIUsage | undefined {
+  const record = asRecord(value);
+  if (record === undefined) {
+    return undefined;
+  }
+
+  const usage: OpenAIUsage = {};
+  if (typeof record['prompt_tokens'] === 'number') {
+    usage.promptTokens = record['prompt_tokens'];
+  }
+  if (typeof record['completion_tokens'] === 'number') {
+    usage.completionTokens = record['completion_tokens'];
+  }
+  if (typeof record['total_tokens'] === 'number') {
+    usage.totalTokens = record['total_tokens'];
+  }
+
+  if (
+    usage.promptTokens === undefined &&
+    usage.completionTokens === undefined &&
+    usage.totalTokens === undefined
+  ) {
+    return undefined;
+  }
+
+  return usage;
 }

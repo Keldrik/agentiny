@@ -12,21 +12,29 @@
  *   initialState: { data: '' }
  * });
  *
- * const analyzeAction = createOpenAIAction(
- *   { apiKey: process.env.OPENAI_API_KEY! },
- *   {
- *     prompt: (state) => `Analyze: ${state.data}`,
- *     onResponse: (response, state) => { state.analysis = response; }
- *   }
- * );
+ * const analyzeAction = createOpenAIAction({
+ *   prompt: (state) => `Analyze: ${state.data}`,
+ *   onResponse: (result, state) => {
+ *     state.analysis = result.text;
+ *   },
+ * });
  *
  * agent.addTrigger({
  *   id: 'analyze',
  *   check: (state) => !!state.data && !state.analysis,
- *   actions: [analyzeAction]
+ *   actions: [analyzeAction],
  * });
  * ```
  */
 
 export { createOpenAIAction } from './adapter';
-export type { OpenAIConfig, OpenAIOptions } from './adapter';
+export type {
+  ChatCompletionCreateRequest,
+  ChatCompletionRequestOptions,
+  OpenAIActionOptions,
+  OpenAIActionResult,
+  OpenAICompatibleClient,
+  OpenAIMessage,
+  OpenAIRole,
+  OpenAIUsage,
+} from './types';

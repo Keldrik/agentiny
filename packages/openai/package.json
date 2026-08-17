@@ -1,6 +1,6 @@
 {
   "name": "@agentiny/openai",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "OpenAI adapter for @agentiny/core",
   "repository": "https://github.com/Keldrik/agentiny",
   "publishConfig": {
@@ -24,7 +24,9 @@
   ],
   "scripts": {
     "build": "tsup",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "keywords": [
     "agent",
@@ -36,7 +38,8 @@
   "license": "MIT",
   "peerDependencies": {
     "@agentiny/core": "*",
-    "openai": "^6.5.0"
+    "openai": "^6.5.0 || ^7.0.0",
+    "zod": "^3.25 || ^4.0"
   },
   "peerDependenciesMeta": {
     "@agentiny/core": {
@@ -44,12 +47,16 @@
     },
     "openai": {
       "optional": false
+    },
+    "zod": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@agentiny/core": "*",
-    "@types/node": "^24.8.1",
-    "openai": "^6.5.0",
-    "typescript": "^5.9.3"
+    "@types/node": "^26.2.0",
+    "openai": "^7.4.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }
