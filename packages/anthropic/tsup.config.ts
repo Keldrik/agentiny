@@ -7,4 +7,5 @@ export default defineConfig({
   dts: true,
   sourcemap: true,
   clean: true,
+  external: ['@anthropic-ai/sdk', '@agentiny/core'],
 });

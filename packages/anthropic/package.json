@@ -1,6 +1,6 @@
 {
   "name": "@agentiny/anthropic",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Anthropic Claude adapter for @agentiny/core",
   "repository": "https://github.com/Keldrik/agentiny",
   "publishConfig": {
@@ -24,7 +24,9 @@
   ],
   "scripts": {
     "build": "tsup",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "keywords": [
     "agent",
@@ -37,7 +39,8 @@
   "license": "MIT",
   "peerDependencies": {
     "@agentiny/core": "*",
-    "@anthropic-ai/sdk": "^0.67.0"
+    "@anthropic-ai/sdk": ">=0.67.0 <1.0.0",
+    "zod": "^3.25 || ^4.0"
   },
   "peerDependenciesMeta": {
     "@agentiny/core": {
@@ -45,12 +48,16 @@
     },
     "@anthropic-ai/sdk": {
       "optional": false
+    },
+    "zod": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@agentiny/core": "*",
-    "@anthropic-ai/sdk": "^0.67.0",
-    "@types/node": "^24.8.1",
-    "typescript": "^5.9.3"
+    "@anthropic-ai/sdk": "^0.117.1",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }
