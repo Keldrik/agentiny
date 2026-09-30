@@ -26,10 +26,7 @@ agent.when(
   ],
 );
 
-agent.once(
-  (s) => s.ready,
-  [() => log('once', 'ready=true fired (will not fire again)')],
-);
+agent.once((s) => s.ready, [() => log('once', 'ready=true fired (will not fire again)')]);
 
 agent.on('login', [() => log('on', `'login' event received`)]);
 

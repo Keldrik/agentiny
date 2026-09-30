@@ -9,25 +9,23 @@ import { Agent } from '@agentiny/core';
 
 const agent = new Agent({ initialState: { count: 0 } });
 
-agent.when(
-  (state) => state.count > 5,
-  [(state) => console.log('Milestone reached:', state.count)],
-);
+agent.when((state) => state.count > 5, [(state) => console.log('Milestone reached:', state.count)]);
 
 await agent.start();
 agent.setState({ count: 10 });
 await agent.settle();
+await agent.stop();
 ```
 
 ## Packages
 
-| Package | Purpose | Status |
-| --- | --- | --- |
-| **[@agentiny/core](packages/core)** | Core trigger-condition-action framework | Foundation |
-| **[@agentiny/utils](packages/utils)** | Retry, timeout, and validation helpers | Ready |
-| **[@agentiny/openai](packages/openai)** | OpenAI-backed agent actions | Ready |
-| **[@agentiny/anthropic](packages/anthropic)** | Anthropic-backed agent actions | Ready |
-| **[@agentiny/gemini](packages/gemini)** | Google Gemini-backed agent actions | Ready |
+| Package                                       | Purpose                                 | Status     |
+| --------------------------------------------- | --------------------------------------- | ---------- |
+| **[@agentiny/core](packages/core)**           | Core trigger-condition-action framework | Foundation |
+| **[@agentiny/utils](packages/utils)**         | Retry, timeout, and validation helpers  | Ready      |
+| **[@agentiny/openai](packages/openai)**       | OpenAI-backed agent actions             | Ready      |
+| **[@agentiny/anthropic](packages/anthropic)** | Anthropic-backed agent actions          | Ready      |
+| **[@agentiny/gemini](packages/gemini)**       | Google Gemini-backed agent actions      | Ready      |
 
 ## Quick Start
 
@@ -63,7 +61,9 @@ agent.when(
 
 await agent.start();
 agent.setState({ temperature: 35 });
+await agent.settle();
 agent.setState({ temperature: 20 });
+await agent.settle();
 await agent.stop();
 ```
 
@@ -117,10 +117,13 @@ agent.when((state) => state.userInput.length > 0, [aiAction]);
 
 ## Development
 
+Use Node.js **22.12+** and npm **10+**. Node.js 24 is recommended (`.nvmrc`).
+
 ```bash
 git clone https://github.com/keldrik/agentiny.git
 cd agentiny
-npm install
+npm ci
+npm run check
 ```
 
 Common commands:
@@ -128,11 +131,21 @@ Common commands:
 ```bash
 npm run typecheck
 npm run lint
+npm run lint:fix
 npm run format
+npm run format:write
 npm run build
-npm run test:run -w @agentiny/core
+npm test
+npm run test:smoke
 ```
+
+Linting uses **oxlint** and formatting uses **oxfmt**. `npm run check` runs the
+same lint, formatting, type, test, build, and package-export checks as CI. Tests
+use mocked AI clients and do not require API keys.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the workspace layout, individual
+package commands, editor setup, and dependency workflow.
 
 ## License
 
-MIT - See LICENSE for details.
+MIT - See [LICENSE](packages/utils/LICENSE).

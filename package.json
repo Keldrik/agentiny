@@ -4,16 +4,26 @@
   "workspaces": [
     "packages/*"
   ],
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
   "scripts": {
+    "build": "npm run build -w @agentiny/core && npm run build -w @agentiny/utils && npm run build -w @agentiny/openai && npm run build -w @agentiny/anthropic && npm run build -w @agentiny/gemini",
+    "test": "npm run test:run --workspaces --if-present",
+    "test:run": "npm test",
+    "test:smoke": "node scripts/check-exports.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "oxlint packages",
-    "format": "oxfmt --check \"{packages,examples}/**/*.{ts,tsx,js,json,md}\"",
-    "format:write": "oxfmt --write \"{packages,examples}/**/*.{ts,tsx,js,json,md}\"",
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --fix --deny-warnings .",
+    "format": "oxfmt --check '{packages,examples,scripts,.github}/**/*' '*.json' '.ox*.json' README.md CONTRIBUTING.md",
+    "format:write": "oxfmt --write '{packages,examples,scripts,.github}/**/*' '*.json' '.ox*.json' README.md CONTRIBUTING.md",
+    "check": "npm run lint && npm run format && npm run typecheck && npm test && npm run build && npm run test:smoke",
     "demo": "npm run build -w @agentiny/core && node examples/triggers-demo.mjs"
   },
   "devDependencies": {
-    "oxfmt": "^0.56.0",
-    "oxlint": "^1.71.0",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
     "tsup": "^8.5.1"
   }
 }
