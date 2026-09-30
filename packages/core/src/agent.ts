@@ -82,8 +82,8 @@ export class Agent<TState = unknown> {
   private _onError?: (error: Error) => void;
   private _executionLoop: Promise<void> | null = null;
   private _shouldRun = false;
-  /** True while the body of `_runExecutionLoop` is on the call stack. */
-  private _insideExecutionLoop = false;
+  /** True while a cycle is evaluating checks, conditions, or actions. */
+  private _isEvaluating = false;
   private _stateChanged = true;
   private _eventEmissionCount = new Map<string, number>();
   private _eventLastSeenByTrigger = new Map<string, Map<string, number>>();
@@ -466,6 +466,8 @@ export class Agent<TState = unknown> {
    *
    * Event emissions made while idle or stopped are preserved and will be processed
    * on the first evaluation pass after start. Already-consumed events are not re-fired.
+   * If a previous shutdown is still finishing, waits for that session first.
+   * Call from outside checks, conditions, and actions to avoid waiting for them.
    *
    * @throws {AgentError} If agent is already running or paused
    *
@@ -487,6 +489,13 @@ export class Agent<TState = unknown> {
         });
       }
 
+      // A requested stop may still have an action in flight. Never overlap
+      // sessions, and revalidate after waiting in case another caller started.
+      if (this._executionLoop) {
+        await this._executionLoop;
+        return this.start();
+      }
+
       this._status = AgentStatusEnum.Running;
       this._shouldRun = true;
       this._stateChanged = true; // Evaluate triggers immediately on start
@@ -498,7 +507,7 @@ export class Agent<TState = unknown> {
       this._startScheduledTriggers();
 
       // Start the execution loop (fire and forget)
-      this._executionLoop = this._runExecutionLoop();
+      this._startExecutionLoop();
     } catch (error) {
       if (this._onError && error instanceof Error) {
         this._onError(error);
@@ -514,10 +523,9 @@ export class Agent<TState = unknown> {
    * currently running or paused, throws an AgentError.
    *
    * Aborts the run-session `AbortSignal` so cooperative actions can exit early.
-   * When called from outside the execution loop, waits for the loop (and any
-   * in-flight action) to finish. When called from inside an action, returns
-   * after requesting stop without awaiting the loop (avoids deadlock); the loop
-   * exits once the current action returns.
+   * Always waits for the loop and any in-flight action to finish. Actions must
+   * use requestStop() instead: awaiting stop() inside an action would wait for
+   * that same action to return.
    *
    * @throws {AgentError} If agent is not running or paused
    *
@@ -528,60 +536,12 @@ export class Agent<TState = unknown> {
    */
   async stop(): Promise<void> {
     try {
-      if (this._status !== AgentStatusEnum.Running && this._status !== AgentStatusEnum.Paused) {
-        throw new AgentError('Agent is not running', 'AGENT_NOT_RUNNING', {
-          currentStatus: this._status,
-        });
+      // Join an existing shutdown request while its action is still finishing.
+      if (this._status !== AgentStatusEnum.Stopped || !this._executionLoop) {
+        this.requestStop();
       }
-
-      this._status = AgentStatusEnum.Stopped;
-      this._shouldRun = false;
-      this._abortCurrentRun();
-
-      // Cancel any pending scheduled timers so they don't fire post-stop
-      this._stopAllScheduledTriggers(true);
-      this._cancelAllDelayWaiters();
-      this._pendingDelayedExecutions = [];
-
-      // Wake the execution loop so it can exit immediately
-      this._wake();
-
-      // Reject all pending settle promises
-      const settleError = new AgentError('Agent stopped while waiting to settle', 'AGENT_STOPPED', {
-        pendingSettles: this._settleResolvers.length,
-      });
-
-      for (const resolver of this._settleResolvers) {
-        if (resolver.timeoutId) {
-          clearTimeout(resolver.timeoutId);
-        }
-        resolver.reject(settleError);
-      }
-      this._settleResolvers = [];
-
-      // Reject all pending waitFor promises so awaiters don't hang
-      const waitStopError = new AgentError(
-        'Agent stopped while waiting for predicate',
-        'AGENT_STOPPED',
-        { pendingWaiters: this._waitForResolvers.length },
-      );
-      for (const resolver of this._waitForResolvers) {
-        if (resolver.timeoutId) {
-          clearTimeout(resolver.timeoutId);
-        }
-        resolver.reject(waitStopError);
-      }
-      this._waitForResolvers = [];
-
-      // Avoid deadlock when stop() is called from inside an action on the loop stack.
-      if (this._insideExecutionLoop) {
-        return;
-      }
-
-      // Wait for the execution loop to finish
       if (this._executionLoop) {
         await this._executionLoop;
-        this._executionLoop = null;
       }
     } catch (error) {
       if (this._onError && error instanceof Error) {
@@ -589,6 +549,60 @@ export class Agent<TState = unknown> {
       }
       throw error;
     }
+  }
+
+  /**
+   * Request shutdown without waiting for the current action to finish.
+   * Safe to call from checks, conditions, actions, and lifecycle callbacks.
+   * Aborts the session and skips remaining actions. start() waits for this
+   * session to finish before starting another one.
+   * @throws {AgentError} If the agent is not running or paused
+   */
+  requestStop(): void {
+    if (this._status !== AgentStatusEnum.Running && this._status !== AgentStatusEnum.Paused) {
+      throw new AgentError('Agent is not running', 'AGENT_NOT_RUNNING', {
+        currentStatus: this._status,
+      });
+    }
+
+    this._status = AgentStatusEnum.Stopped;
+    this._shouldRun = false;
+    this._abortCurrentRun();
+
+    // Cancel any pending scheduled timers so they don't fire post-stop
+    this._stopAllScheduledTriggers(true);
+    this._cancelAllDelayWaiters();
+    this._pendingDelayedExecutions = [];
+
+    // Wake the execution loop so it can exit immediately
+    this._wake();
+
+    // Reject all pending settle promises
+    const settleError = new AgentError('Agent stopped while waiting to settle', 'AGENT_STOPPED', {
+      pendingSettles: this._settleResolvers.length,
+    });
+
+    for (const resolver of this._settleResolvers) {
+      if (resolver.timeoutId) {
+        clearTimeout(resolver.timeoutId);
+      }
+      resolver.reject(settleError);
+    }
+    this._settleResolvers = [];
+
+    // Reject all pending waitFor promises so awaiters don't hang
+    const waitStopError = new AgentError(
+      'Agent stopped while waiting for predicate',
+      'AGENT_STOPPED',
+      { pendingWaiters: this._waitForResolvers.length },
+    );
+    for (const resolver of this._waitForResolvers) {
+      if (resolver.timeoutId) {
+        clearTimeout(resolver.timeoutId);
+      }
+      resolver.reject(waitStopError);
+    }
+    this._waitForResolvers = [];
   }
 
   /**
@@ -616,8 +630,8 @@ export class Agent<TState = unknown> {
    * current state, and pending settle() promises. Pending settle() timeouts
    * continue to tick while paused. Resume with resume().
    *
-   * Aborts the run-session `AbortSignal`. When called from inside an action,
-   * returns without awaiting the loop (avoids deadlock).
+   * Aborts the run-session `AbortSignal` and waits for the execution loop to
+   * finish. Actions must use requestPause() to avoid waiting for themselves.
    *
    * @throws {AgentError} If agent is not running
    * @throws {AgentError} If agent is already paused
@@ -631,39 +645,12 @@ export class Agent<TState = unknown> {
    */
   async pause(): Promise<void> {
     try {
-      if (this._status === AgentStatusEnum.Paused) {
-        throw new AgentError('Agent is already paused', 'AGENT_ALREADY_PAUSED', {
-          currentStatus: this._status,
-        });
+      if (this._status !== AgentStatusEnum.Paused || !this._executionLoop) {
+        this.requestPause();
       }
-      if (this._status !== AgentStatusEnum.Running) {
-        throw new AgentError('Agent is not running', 'AGENT_NOT_RUNNING', {
-          currentStatus: this._status,
-        });
-      }
-
-      this._status = AgentStatusEnum.Paused;
-      this._shouldRun = false;
-      this._abortCurrentRun();
-      this._cancelAllDelayWaiters();
-      this._pendingDelayedExecutions = [];
-
-      // Wake the loop so it exits its current wait immediately
-      this._wake();
-
-      // Avoid deadlock when pause() is called from inside an action on the loop stack.
-      if (this._insideExecutionLoop) {
-        return;
-      }
-
-      // Wait for the execution loop to finish its current cycle and exit
       if (this._executionLoop) {
         await this._executionLoop;
-        this._executionLoop = null;
       }
-      // NOTE: _settleResolvers are intentionally NOT rejected here.
-      // Their timeouts keep ticking. They will be resolved/rejected when
-      // resume() restarts the loop and quiet cycles are detected.
     } catch (error) {
       if (this._onError && error instanceof Error) {
         this._onError(error);
@@ -673,10 +660,44 @@ export class Agent<TState = unknown> {
   }
 
   /**
+   * Request a pause without waiting for the current action to finish.
+   * Safe to call from checks, conditions, and actions. resume() waits for the
+   * current session to finish before starting a new one.
+   * @throws {AgentError} If the agent is not running or is already paused
+   */
+  requestPause(): void {
+    if (this._status === AgentStatusEnum.Paused) {
+      throw new AgentError('Agent is already paused', 'AGENT_ALREADY_PAUSED', {
+        currentStatus: this._status,
+      });
+    }
+    if (this._status !== AgentStatusEnum.Running) {
+      throw new AgentError('Agent is not running', 'AGENT_NOT_RUNNING', {
+        currentStatus: this._status,
+      });
+    }
+
+    this._status = AgentStatusEnum.Paused;
+    this._shouldRun = false;
+    this._abortCurrentRun();
+    this._cancelAllDelayWaiters();
+    this._pendingDelayedExecutions = [];
+
+    // Wake the loop so it exits its current wait immediately
+    this._wake();
+
+    // NOTE: _settleResolvers are intentionally NOT rejected here.
+    // Their timeouts keep ticking. They will be resolved/rejected when
+    // resume() restarts the loop and quiet cycles are detected.
+  }
+
+  /**
    * Resume a paused agent, restarting trigger evaluation.
    *
    * Triggers are immediately re-evaluated on resume. Does not reset the
    * trigger ID counter or event emission counts.
+   * Waits for any in-flight work from the paused session to finish first.
+   * Call from outside checks, conditions, and actions.
    *
    * @throws {AgentError} If agent is not paused
    *
@@ -694,14 +715,20 @@ export class Agent<TState = unknown> {
         });
       }
 
+      if (this._executionLoop) {
+        await this._executionLoop;
+        return this.resume();
+      }
+
       this._status = AgentStatusEnum.Running;
       this._shouldRun = true;
       this._stateChanged = true; // Re-evaluate triggers immediately on resume
+      this._consecutiveQuietCycles = 0;
       this._cascadeDepth = 0;
       this._abortController = new AbortController();
 
       // Restart the execution loop
-      this._executionLoop = this._runExecutionLoop();
+      this._startExecutionLoop();
 
       // Wake any pending settle() waiters
       this._wake();
@@ -759,6 +786,7 @@ export class Agent<TState = unknown> {
     // If already quiet enough AND no pending state changes or delayed work, resolve immediately
     if (
       !this._stateChanged &&
+      !this._isEvaluating &&
       !this._hasPendingDelayedWork() &&
       this._consecutiveQuietCycles >= quietCycles
     ) {
@@ -872,7 +900,12 @@ export class Agent<TState = unknown> {
    * Pending delays or delayed executions prevent settle from resolving.
    */
   private _checkSettleResolvers(): void {
-    if (this._hasPendingDelayedWork()) {
+    if (
+      !this.isRunning() ||
+      this._stateChanged ||
+      this._isEvaluating ||
+      this._hasPendingDelayedWork()
+    ) {
       return;
     }
     // Filter out resolved promises
@@ -1055,10 +1088,15 @@ export class Agent<TState = unknown> {
    * @returns Promise that resolves when the loop exits
    */
   private async _runExecutionLoop(): Promise<void> {
-    this._insideExecutionLoop = true;
     try {
       while (this._shouldRun) {
         try {
+          this._isEvaluating = true;
+          // Invalidate old quietness before any check/action can await or call
+          // settle(). Clearing the dirty flag does not mean work has finished.
+          if (this._stateChanged || this._pendingDelayedExecutions.length > 0) {
+            this._consecutiveQuietCycles = 0;
+          }
           // Drain delayed executions first so completed delays run promptly and
           // serially on the loop (same error/re-entrancy model as immediate actions).
           const hadPendingDelayed = this._pendingDelayedExecutions.length > 0;
@@ -1104,9 +1142,10 @@ export class Agent<TState = unknown> {
           // Resolve waitFor() predicates every cycle so in-place action mutations
           // (which never go through State.set) are observed while running.
           this._checkWaitForResolvers();
+          this._isEvaluating = false;
 
           // Track quiet cycles for settle() functionality
-          if (didWorkThisCycle || this._hasPendingDelayedWork()) {
+          if (didWorkThisCycle || this._stateChanged || this._hasPendingDelayedWork()) {
             // Work happened or delays still open — not quiet yet.
             this._consecutiveQuietCycles = 0;
           } else {
@@ -1121,6 +1160,7 @@ export class Agent<TState = unknown> {
           // Wait for next event or timeout (event-driven instead of fixed polling)
           await this._waitForNextCycle();
         } catch (error) {
+          this._isEvaluating = false;
           // Log error but continue the loop
           if (error instanceof Error && this._onError) {
             this._onError(error);
@@ -1128,8 +1168,20 @@ export class Agent<TState = unknown> {
         }
       }
     } finally {
-      this._insideExecutionLoop = false;
+      this._isEvaluating = false;
     }
+  }
+
+  /** Install the session promise before invoking any user callbacks. */
+  private _startExecutionLoop(): void {
+    const loop = Promise.resolve()
+      .then(() => this._runExecutionLoop())
+      .finally(() => {
+        if (this._executionLoop === loop) {
+          this._executionLoop = null;
+        }
+      });
+    this._executionLoop = loop;
   }
 
   /**
@@ -1176,7 +1228,7 @@ export class Agent<TState = unknown> {
       // Check if trigger condition is met
       const checkResult = await Promise.resolve(trigger.check(state));
 
-      if (!checkResult) {
+      if (!checkResult || !this._shouldRun) {
         return; // Trigger check failed, nothing to do
       }
 

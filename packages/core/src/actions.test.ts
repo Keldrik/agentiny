@@ -65,6 +65,45 @@ describe('executeActions', () => {
     });
   });
 
+  describe('cancellation', () => {
+    it('skips all actions when the context is already aborted', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const action = vi.fn();
+      expect(
+        await executeActions(
+          [action],
+          {},
+          {
+            signal: controller.signal,
+            triggerId: 'cancelled',
+          },
+        ),
+      ).toEqual([]);
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it('skips later actions when the active action aborts and throws', async () => {
+      const controller = new AbortController();
+      const error = new Error('cancelled action');
+      const later = vi.fn();
+      const errors = await executeActions(
+        [
+          async () => {
+            await Promise.resolve();
+            controller.abort();
+            throw error;
+          },
+          later,
+        ],
+        {},
+        { signal: controller.signal, triggerId: 'cancelled' },
+      );
+      expect(errors).toEqual([error]);
+      expect(later).not.toHaveBeenCalled();
+    });
+  });
+
   describe('async actions', () => {
     it('should handle async actions', async () => {
       const action = vi.fn(async () => {

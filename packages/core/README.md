@@ -87,8 +87,34 @@ async (state, ctx) => {
 };
 ```
 
-`stop()` / `pause()` called from inside an action do not deadlock: they request
-shutdown and return without awaiting the execution loop.
+`stop()` and `pause()` abort the session signal, skip the remaining actions in
+the sequence, and wait for the active action and execution loop to finish.
+An action that ignores cancellation can keep those promises pending until it
+returns.
+
+Inside a check, condition, or action, use the synchronous `requestStop()` or
+`requestPause()` methods. They request shutdown without waiting for the callback
+that invoked them:
+
+```typescript
+agent.once(
+  (state) => state.done,
+  [
+    async () => {
+      await flushResults();
+      agent.requestStop();
+    },
+  ],
+);
+```
+
+**Migration:** replace `await agent.stop()` / `await agent.pause()` inside
+callbacks with `agent.requestStop()` / `agent.requestPause()`. Awaiting the
+completion methods from inside the work they wait for would deadlock. Call
+`start()` / `resume()` from outside those callbacks; they wait for the previous
+session, including one-shot and fire-count bookkeeping, before starting a new
+execution loop. An external `stop()` / `pause()` call can also await an existing
+request while that session is still finishing.
 
 Trigger `delay` is non-blocking — other triggers keep evaluating while a delayed
 trigger waits. Actions always see state as of execution time (not a pre-delay
@@ -286,6 +312,8 @@ new Agent<TState>(config?: AgentConfig<TState>)
 - `pause(): Promise<void>`
 - `resume(): Promise<void>`
 - `stop(): Promise<void>`
+- `requestStop(): void`
+- `requestPause(): void`
 - `reset(clearTriggers?: boolean): void`
 - `isRunning(): boolean`
 - `isPaused(): boolean`
@@ -407,6 +435,9 @@ const agent = new Agent({
 
 - `updateState()` is a shallow merge for object state.
 - `settle()` requires the agent to be running.
+- `settle()` waits for active checks, conditions, actions, pending delays, and
+  cascading updates, then the requested quiet cycles. It does not wait for
+  future scheduled ticks or background work that an action did not await.
 - `waitFor()` is callable in any status and resolves with the matching state.
 - Disabled triggers remain registered and can be re-enabled.
 - Event triggers created with `on()` are normal triggers and can be removed with `off()`.

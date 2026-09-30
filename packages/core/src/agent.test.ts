@@ -3269,14 +3269,14 @@ describe('Agent', () => {
   // ─── Critical correctness regressions (issues 1–6) ─────────────────────────
 
   describe('critical correctness regressions', () => {
-    describe('stop/pause from inside an action (no deadlock)', () => {
-      it('resolves stop() when called from inside an action', async () => {
+    describe('shutdown requests from inside an action (no deadlock)', () => {
+      it('returns from requestStop() when called from inside an action', async () => {
         let stopResolved = false;
         agent.when(
           (state) => state.count > 0,
           [
             async () => {
-              await agent.stop();
+              agent.requestStop();
               stopResolved = true;
             },
           ],
@@ -3293,13 +3293,13 @@ describe('Agent', () => {
         expect(agent.isRunning()).toBe(false);
       });
 
-      it('resolves pause() when called from inside an action', async () => {
+      it('returns from requestPause() when called from inside an action', async () => {
         let pauseResolved = false;
         agent.when(
           (state) => state.count > 0,
           [
             async () => {
-              await agent.pause();
+              agent.requestPause();
               pauseResolved = true;
             },
           ],

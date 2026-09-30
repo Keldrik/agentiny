@@ -7,7 +7,8 @@ import type { ActionContext, ActionFn } from './types';
  * asynchronous action functions. Critically, actions continue executing even if
  * one throws an error - errors are collected and returned rather than interrupting
  * execution. This ensures partial execution of action sequences is possible and
- * errors are reported together at the end.
+ * errors are reported together at the end. When ctx.signal is aborted, remaining
+ * actions are skipped; cancellation of the active action is cooperative.
  *
  * @template TState - The type of the state object
  * @param actions - Array of action functions to execute
@@ -64,6 +65,9 @@ export async function executeActions<TState>(
 
   // Execute each action sequentially
   for (const action of actions) {
+    if (ctx?.signal.aborted) {
+      break;
+    }
     try {
       // Use Promise.resolve() to uniformly handle both sync and async actions.
       // Only pass ctx when provided so one-arg actions / mocks keep exact arity.
